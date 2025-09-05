@@ -1,6 +1,6 @@
 # app.py
 # BTZ Cronograma — atualização 1s (status + contadores), fuso fixo Brasília,
-# Início/Fim com HH:MM:SS e edição de atividades (SEM "Legenda de cores").
+# Início/Fim com HH:MM:SS e edição de atividades (em EXPANDER fechado).
 
 from __future__ import annotations
 import time
@@ -152,83 +152,83 @@ if st.button("Adicionar", type="primary"):
             })
             st.success("Atividade adicionada.")
 
-# ------------- Edição de atividades -------------
-st.subheader("🛠️ Editar atividades existentes")
+# ------------- Edição de atividades (EXPANDER oculto) -------------
+# Mostra só as setinhas (»») — ao clicar, abre para editar/remover.
+with st.expander("»»", expanded=False):
+    if not st.session_state.tasks:
+        st.info("Nenhuma atividade para editar ainda.")
+    else:
+        raw_df = pd.DataFrame(st.session_state.tasks).reset_index().rename(columns={"index":"ID"})
+        edited_df = st.data_editor(
+            raw_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "ID": st.column_config.NumberColumn(disabled=True),
+                "Date": st.column_config.TextColumn(help="YYYY-MM-DD"),
+                "Start": st.column_config.TextColumn(help="HH:MM:SS"),
+                "End": st.column_config.TextColumn(help="HH:MM:SS"),
+                "Activity": st.column_config.TextColumn(help="Descrição da atividade"),
+            },
+            key="editor",
+        )
 
-if not st.session_state.tasks:
-    st.info("Nenhuma atividade para editar ainda.")
-else:
-    raw_df = pd.DataFrame(st.session_state.tasks).reset_index().rename(columns={"index":"ID"})
-    edited_df = st.data_editor(
-        raw_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        column_config={
-            "ID": st.column_config.NumberColumn(disabled=True),
-            "Date": st.column_config.TextColumn(help="YYYY-MM-DD"),
-            "Start": st.column_config.TextColumn(help="HH:MM:SS"),
-            "End": st.column_config.TextColumn(help="HH:MM:SS"),
-            "Activity": st.column_config.TextColumn(help="Descrição da atividade"),
-        },
-        key="editor",
-    )
+        colA, colB, colC = st.columns([1,1,2])
+        with colA:
+            do_save = st.button("💾 Salvar alterações", type="primary", use_container_width=True)
+        with colB:
+            to_delete = st.number_input("ID para remover", min_value=0, step=1, value=0, help="Informe o ID da linha para excluir.")
+            do_delete = st.button("🗑️ Remover ID", use_container_width=True)
 
-    colA, colB, colC = st.columns([1,1,2])
-    with colA:
-        do_save = st.button("💾 Salvar alterações", type="primary", use_container_width=True)
-    with colB:
-        to_delete = st.number_input("ID para remover", min_value=0, step=1, value=0, help="Informe o ID da linha para excluir.")
-        do_delete = st.button("🗑️ Remover ID", use_container_width=True)
+        if do_delete:
+            if to_delete in edited_df["ID"].values:
+                edited_df = edited_df[edited_df["ID"] != to_delete].reset_index(drop=True)
+                st.success(f"Removido ID {to_delete}. Clique em **Salvar alterações** para confirmar.")
+            else:
+                st.warning("ID não encontrado na tabela acima.")
 
-    if do_delete:
-        if to_delete in edited_df["ID"].values:
-            edited_df = edited_df[edited_df["ID"] != to_delete].reset_index(drop=True)
-            st.success(f"Removido ID {to_delete}. Clique em **Salvar alterações** para confirmar.")
-        else:
-            st.warning("ID não encontrado na tabela acima.")
+        if do_save:
+            new_tasks: list[dict] = []
+            errors: list[str] = []
+            for i, r in edited_df.iterrows():
+                date_str = str(r.get("Date","")).strip()
+                start_str = str(r.get("Start","")).strip()
+                end_str   = str(r.get("End","")).strip()
+                act       = str(r.get("Activity","")).strip()
 
-    if do_save:
-        new_tasks: list[dict] = []
-        errors: list[str] = []
-        for i, r in edited_df.iterrows():
-            date_str = str(r.get("Date","")).strip()
-            start_str = str(r.get("Start","")).strip()
-            end_str   = str(r.get("End","")).strip()
-            act       = str(r.get("Activity","")).strip()
+                if not (date_str and start_str and end_str and act):
+                    errors.append(f"Linha {i}: campos vazios.")
+                    continue
 
-            if not (date_str and start_str and end_str and act):
-                errors.append(f"Linha {i}: campos vazios.")
-                continue
+                try:
+                    d_parsed = datetime.fromisoformat(date_str).date()
+                except ValueError:
+                    errors.append(f"Linha {i}: Date inválida (use YYYY-MM-DD).")
+                    continue
 
-            try:
-                d_parsed = datetime.fromisoformat(date_str).date()
-            except ValueError:
-                errors.append(f"Linha {i}: Date inválida (use YYYY-MM-DD).")
-                continue
+                t_start = parse_time_str(start_str)
+                t_end   = parse_time_str(end_str)
+                if t_start is None or t_end is None:
+                    errors.append(f"Linha {i}: horários inválidos (use HH:MM:SS).")
+                    continue
 
-            t_start = parse_time_str(start_str)
-            t_end   = parse_time_str(end_str)
-            if t_start is None or t_end is None:
-                errors.append(f"Linha {i}: horários inválidos (use HH:MM:SS).")
-                continue
+                if datetime.combine(d_parsed, t_end) <= datetime.combine(d_parsed, t_start):
+                    errors.append(f"Linha {i}: Fim deve ser após Início.")
+                    continue
 
-            if datetime.combine(d_parsed, t_end) <= datetime.combine(d_parsed, t_start):
-                errors.append(f"Linha {i}: Fim deve ser após Início.")
-                continue
+                new_tasks.append({
+                    "Date": d_parsed.isoformat(),
+                    "Start": t_start.strftime("%H:%M:%S"),
+                    "End":   t_end.strftime("%H:%M:%S"),
+                    "Activity": act,
+                })
 
-            new_tasks.append({
-                "Date": d_parsed.isoformat(),
-                "Start": t_start.strftime("%H:%M:%S"),
-                "End":   t_end.strftime("%H:%M:%S"),
-                "Activity": act,
-            })
-
-        if errors:
-            st.error("Não foi possível salvar por causa de erros:\n- " + "\n- ".join(errors))
-        else:
-            st.session_state.tasks = new_tasks
-            st.success("Alterações salvas.")
-            st.rerun()
+            if errors:
+                st.error("Não foi possível salvar por causa de erros:\n- " + "\n- ".join(errors))
+            else:
+                st.session_state.tasks = new_tasks
+                st.success("Alterações salvas.")
+                st.rerun()
 
 # ------------- Construção da visão -------------
 if not st.session_state.tasks:
@@ -265,17 +265,15 @@ else:
     with k4:
         st.metric("Atividades concluídas", f"{int((df['Status']==STATUS_DONE).sum())}/{len(df)}")
 
-    # Progresso da atual
     if current_row is not None:
         total_secs = (current_row["End"] - current_row["Start"]).total_seconds()
         elapsed = (now - current_row["Start"]).total_seconds()
         pct = max(0.0, min(1.0, elapsed / total_secs)) if total_secs > 0 else 0.0
         st.progress(pct, text=f"Em execução: {current_row['Activity']} ({int(pct*100)}%)")
 
-    # Tabela estilizada (SEM legenda de cores)
     st.markdown(style_table(df), unsafe_allow_html=True)
 
-# ---------------- Auto-refresh 1s (pode pausar no modo edição) ----------------
+# ---------------- Auto-refresh 1s (pausável) ----------------
 if not st.session_state.pause_refresh:
     time.sleep(1.0)
     st.rerun()
