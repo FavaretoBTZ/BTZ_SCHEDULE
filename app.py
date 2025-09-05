@@ -1,6 +1,6 @@
 # app.py
-# BTZ Cronograma — atualização 1s, fuso fixo Brasília,
-# criação/edição ocultas, tabela única e HEADER "congelado" (sticky) acima da tabela.
+# BTZ Cronograma — header fixo + atualização 1s, fuso fixo Brasília,
+# criação/edição em expanders, tabela única e coluna "Atividade" após "Duração".
 
 from __future__ import annotations
 import time
@@ -12,7 +12,6 @@ import streamlit as st
 
 # ---------------- Config ----------------
 st.set_page_config(page_title="BTZ | Cronograma de Pista", page_icon="🗓️", layout="wide")
-
 TZINFO = ZoneInfo("America/Sao_Paulo")  # sempre Brasília
 
 STATUS_DONE = "Concluída"
@@ -25,38 +24,56 @@ COLOR_RUNNING = "#58d68d"
 COLOR_NEXT = "#f9e79f"
 COLOR_FUTURE = "#ecf0f1"
 
-# --------- Estilos (sticky header + preservação de scroll) ---------
+# --------- CSS/JS: header fixo + preservação do scroll ---------
 st.markdown("""
 <style>
-/* Sticky container acima da tabela */
-.sticky-wrap {
-  position: sticky;
-  top: 0;                 /* "gruda" no topo ao rolar */
+/* Header fixo centralizado, com largura semelhante ao container do Streamlit */
+#btz-fixed {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(100vw - 2rem, 1200px);
   z-index: 1000;
-  background: #0b0f19;    /* fundo do tema dark */
+  background: #0b0f19;          /* fundo dark */
   border-bottom: 1px solid #1f2937;
-  padding-top: .25rem;
-  padding-bottom: .75rem;
+  padding: .25rem .5rem .75rem .5rem;
+  border-radius: 0 0 .5rem .5rem;
 }
 
-/* remove gap entre colunas e sticky pra ficar mais compacto */
-.block-container { padding-top: 1.25rem; }
+/* Espaçador para empurrar o conteúdo abaixo do header fixo */
+.btz-spacer { height: var(--btz-fixed-h, 240px); }
 
-/* ajusta largura da barra de progresso */
-.stProgress > div > div {
-  height: 10px;
-}
+/* Barra de progresso mais "parruda" */
+.stProgress > div > div { height: 10px; }
+
+/* Deixa o header da tabela grudado também, se desejar */
+table thead th { position: sticky; top: 0; z-index: 1; }
 </style>
 
 <script>
-// Preserva posição de rolagem entre atualizações (1s)
+// Ajusta dinamicamente a altura do espaçador de acordo com o header fixo
 (function(){
   const KEY = "btz_scrollY";
-  // restaura depois que a página renderiza
-  const y = sessionStorage.getItem(KEY);
-  if (y !== null) { window.scrollTo(0, parseFloat(y)); }
-  // salva a posição continuamente
-  setInterval(()=>{ sessionStorage.setItem(KEY, window.scrollY); }, 300);
+  function restoreScroll(){
+    const y = sessionStorage.getItem(KEY);
+    if (y !== null) { window.scrollTo(0, parseFloat(y)); }
+  }
+  function saveScroll(){
+    sessionStorage.setItem(KEY, window.scrollY);
+  }
+  setInterval(saveScroll, 300);
+
+  const el = document.getElementById("btz-fixed");
+  function setH(){
+    if (!el) return;
+    const h = el.offsetHeight;
+    document.documentElement.style.setProperty("--btz-fixed-h", (h + 8) + "px");
+  }
+  const ro = new ResizeObserver(setH);
+  if (el) ro.observe(el);
+  setH();
+  restoreScroll();
 })();
 </script>
 """, unsafe_allow_html=True)
@@ -93,7 +110,8 @@ def classify_rows(df: pd.DataFrame, now: datetime) -> pd.DataFrame:
     return df
 
 def style_table(df: pd.DataFrame) -> str:
-    preferred = ["Data","Início","Fim","Atividade","Duração","Status"]
+    # Ordem desejada com "Atividade" após "Duração"
+    preferred = ["Data","Início","Fim","Duração","Atividade","Status"]
     fallback  = ["Start","End","Activity","Status"]
     cols = [c for c in preferred if c in df.columns] or [c for c in fallback if c in df.columns]
     view = df[cols].copy()
@@ -109,7 +127,8 @@ def style_table(df: pd.DataFrame) -> str:
                     .hide(axis="index")
                     .set_table_styles([
                         {"selector":"table","props":[("border-collapse","separate"),("border-spacing","0"),("width","100%"),("font-family","Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial")]},
-                        {"selector":"th","props":[("background","#111827"),("color","white"),("position","sticky"),("top","0"),("z-index","1"),("padding","10px 8px"),("text-align","left")]},
+                        {"selector":"th","props":[("background","#111827"),("color","white"),("position","sticky"),
+                                                  ("top","0"),("z-index","2"),("padding","10px 8px"),("text-align","left")]},
                         {"selector":"td","props":[("padding","10px 8px"),("border-bottom","1px solid #e5e7eb")]}
                     ])
                     .set_properties(**{"font-size":"0.95rem"}))
@@ -124,13 +143,13 @@ def ensure_state():
 # ---------------- Estado ----------------
 ensure_state()
 
-# ---------------- Topo (fixo) ----------------
-st.markdown('<div class="sticky-wrap">', unsafe_allow_html=True)
+# -------------- HEADER FIXO (tudo que fica sempre visível) --------------
+st.markdown('<div id="btz-fixed">', unsafe_allow_html=True)
 
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS • Criação/Edição ocultas.")
+st.caption("Header fixo + atualização automática de 1s • Fuso Brasília • Início/Fim com HH:MM:SS • Criação/Edição ocultas.")
 
-# Expanders fechados (criar + editar)
+# Expanders fechados: criar e editar
 with st.expander("»»", expanded=False):
     c1, c2, c3, c4 = st.columns([1,1.5,1.7,3.8])
     with c1:
@@ -179,7 +198,6 @@ with st.expander("»»", expanded=False):
             },
             key="editor",
         )
-
         colA, colB, colC = st.columns([1,1,2])
         with colA:
             do_save = st.button("💾 Salvar alterações", type="primary", use_container_width=True)
@@ -228,7 +246,7 @@ with st.expander("»»", expanded=False):
                 st.success("Alterações salvas.")
                 st.rerun()
 
-# KPIs + progresso (parte do sticky)
+# KPIs e barra (parte do header fixo)
 if st.session_state.tasks:
     df_tmp = pd.DataFrame(st.session_state.tasks)
     start_str = df_tmp["Date"].astype(str) + " " + df_tmp["Start"].astype(str)
@@ -243,6 +261,7 @@ if st.session_state.tasks:
     df_view["Início"]  = df_view["Start"].dt.strftime("%H:%M:%S")
     df_view["Fim"]     = df_view["End"].dt.strftime("%H:%M:%S")
     df_view["Duração"] = (df_view["End"] - df_view["Start"]).apply(lambda x: human_td(x))
+    df_view["Atividade"] = df_view.get("Activity", df_view.get("Atividade", pd.Series([""]*len(df_view))))
     df_view = classify_rows(df_view, now)
 
     running = df_view[df_view["Status"] == STATUS_RUNNING]
@@ -262,9 +281,9 @@ if st.session_state.tasks:
         pct = max(0.0, min(1.0, elapsed / total_secs)) if total_secs > 0 else 0.0
         st.progress(pct, text=f"Em execução: {current_row['Activity']} ({int(pct*100)}%)")
 
-st.markdown('</div>', unsafe_allow_html=True)  # fecha sticky-wrap
+st.markdown('</div><div class="btz-spacer"></div>', unsafe_allow_html=True)  # fecha header e insere espaçador
 
-# ---------------- Tabela (abaixo do sticky) ----------------
+# ---------------- TABELA (conteúdo que rola) ----------------
 if not st.session_state.tasks:
     st.info("Sem atividades cadastradas.")
 else:
@@ -274,16 +293,16 @@ else:
     df["Start"] = pd.to_datetime(start_str, errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
     df["End"]   = pd.to_datetime(end_str,   errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
 
-    df["Data"]    = df["Start"].dt.strftime("%d/%m/%Y")
-    df["Início"]  = df["Start"].dt.strftime("%H:%M:%S")
-    df["Fim"]     = df["End"].dt.strftime("%H:%M:%S")
-    df["Duração"] = (df["End"] - df["Start"]).apply(lambda x: human_td(x))
+    df["Data"]      = df["Start"].dt.strftime("%d/%m/%Y")
+    df["Início"]    = df["Start"].dt.strftime("%H:%M:%S")
+    df["Fim"]       = df["End"].dt.strftime("%H:%M:%S")
+    df["Duração"]   = (df["End"] - df["Start"]).apply(lambda x: human_td(x))
+    df["Atividade"] = df.get("Activity", df.get("Atividade", pd.Series([""]*len(df))))
     df = df.dropna(subset=["Start","End"]).sort_values(["Start","End"]).reset_index(drop=True)
     df = classify_rows(df, now_br())
 
     st.markdown(style_table(df), unsafe_allow_html=True)
 
-# ---------------- Auto-refresh 1s (pausável via toggle no sidebar) ----------------
-if not st.session_state.pause_refresh:
-    time.sleep(1.0)
-    st.rerun()
+# ---------------- Auto-refresh 1s (pausável se quiser adicionar um toggle) ----------------
+time.sleep(1.0)
+st.rerun()
