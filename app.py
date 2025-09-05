@@ -198,13 +198,13 @@ else:
     c1, c2, c3 = st.columns([1,1,2])
     if c1.button("🧹 Limpar tudo", type="secondary"):
         st.session_state.tasks = []
-        st.experimental_rerun()
+        st.rerun()
     if c2.button("🗑️ Remover última"):
         if st.session_state.tasks:
             st.session_state.tasks.pop()
-            st.experimental_rerun()
+            st.rerun()
     c3.caption("Atualização automática de 1s | Fuso fixo: America/Sao_Paulo | Início/Fim em HH:MM:SS.")
 
 # ---------------- Auto-refresh 1s (reexecução do app) ----------------
 time.sleep(1.0)
-st.experimental_rerun()
+st.rerun()
