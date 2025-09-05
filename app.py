@@ -1,6 +1,6 @@
 # app.py
 # BTZ Cronograma — atualização 1s, fuso fixo Brasília,
-# Início/Fim com HH:MM:SS, edição em EXPANDER, e tabela renderizada UMA vez.
+# Início/Fim com HH:MM:SS, **criação e edição ocultas em EXPANDERS**, tabela única.
 
 from __future__ import annotations
 import time
@@ -89,9 +89,9 @@ def ensure_state():
 ensure_state()
 
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS • Edição de atividades (expander).")
+st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS • Criação/Edição ocultas.")
 
-# --------- Sidebar (Salvar/Carregar & Edição) ---------
+# --------- Sidebar (Salvar/Carregar & Modo edição) ---------
 with st.sidebar:
     st.header("💾 Salvar / Carregar")
     df_csv = pd.DataFrame(st.session_state.tasks) if st.session_state.tasks else pd.DataFrame(
@@ -121,36 +121,37 @@ with st.sidebar:
         help="Ative para editar sem a página atualizar a cada 1s."
     )
 
-# ------------- Formulário (criar nova) -------------
-st.subheader("➕ Nova atividade")
-c1, c2, c3, c4 = st.columns([1,1.5,1.7,3.8])
-with c1:
-    d = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
-with c2:
-    t_start_str = st.text_input("Início (HH:MM:SS)", value="08:00:00", placeholder="HH:MM:SS")
-with c3:
-    t_end_str = st.text_input("Fim (HH:MM:SS)", value="09:00:00", placeholder="HH:MM:SS")
-with c4:
-    activity = st.text_input("Atividade", placeholder="Briefing / Warmup / Box / etc.")
+# ------------- NOVA ATIVIDADE (EXPANDER oculto) -------------
+with st.expander("»»", expanded=False):
+    c1, c2, c3, c4 = st.columns([1,1.5,1.7,3.8])
+    with c1:
+        d = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
+    with c2:
+        t_start_str = st.text_input("Início (HH:MM:SS)", value="08:00:00", placeholder="HH:MM:SS")
+    with c3:
+        t_end_str = st.text_input("Fim (HH:MM:SS)", value="09:00:00", placeholder="HH:MM:SS")
+    with c4:
+        activity = st.text_input("Atividade", placeholder="Briefing / Warmup / Box / etc.")
 
-if st.button("Adicionar", type="primary"):
-    if not activity.strip():
-        st.error("Informe a atividade.")
-    else:
-        t_start = parse_time_str(t_start_str)
-        t_end = parse_time_str(t_end_str)
-        if t_start is None or t_end is None:
-            st.error("Use o formato HH:MM:SS em **Início** e **Fim**.")
-        elif datetime.combine(d, t_end) <= datetime.combine(d, t_start):
-            st.error("**Fim** deve ser após **Início**.")
+    if st.button("Adicionar", type="primary"):
+        if not activity.strip():
+            st.error("Informe a atividade.")
         else:
-            st.session_state.tasks.append({
-                "Date": d.isoformat(),
-                "Start": t_start.strftime("%H:%M:%S"),
-                "End": t_end.strftime("%H:%M:%S"),
-                "Activity": activity.strip(),
-            })
-            st.success("Atividade adicionada.")
+            t_start = parse_time_str(t_start_str)
+            t_end = parse_time_str(t_end_str)
+            if t_start is None or t_end is None:
+                st.error("Use o formato HH:MM:SS em **Início** e **Fim**.")
+            elif datetime.combine(d, t_end) <= datetime.combine(d, t_start):
+                st.error("**Fim** deve ser após **Início**.")
+            else:
+                st.session_state.tasks.append({
+                    "Date": d.isoformat(),
+                    "Start": t_start.strftime("%H:%M:%S"),
+                    "End": t_end.strftime("%H:%M:%S"),
+                    "Activity": activity.strip(),
+                })
+                st.success("Atividade adicionada.")
+                st.rerun()
 
 # ------------- Edição de atividades (EXPANDER oculto) -------------
 with st.expander("»»", expanded=False):
@@ -176,7 +177,8 @@ with st.expander("»»", expanded=False):
         with colA:
             do_save = st.button("💾 Salvar alterações", type="primary", use_container_width=True)
         with colB:
-            to_delete = st.number_input("ID para remover", min_value=0, step=1, value=0, help="Informe o ID da linha para excluir.")
+            to_delete = st.number_input("ID para remover", min_value=0, step=1, value=0,
+                                        help="Informe o ID da linha para excluir.")
             do_delete = st.button("🗑️ Remover ID", use_container_width=True)
 
         if do_delete:
@@ -270,9 +272,8 @@ else:
         pct = max(0.0, min(1.0, elapsed / total_secs)) if total_secs > 0 else 0.0
         st.progress(pct, text=f"Em execução: {current_row['Activity']} ({int(pct*100)}%)")
 
-    # === TABELA: renderizada UMA única vez via placeholder ===
-    table_slot = st.empty()
-    table_slot.markdown(style_table(df), unsafe_allow_html=True)
+    # Tabela única
+    st.empty().markdown(style_table(df), unsafe_allow_html=True)
 
 # ---------------- Auto-refresh 1s (pausável) ----------------
 if not st.session_state.pause_refresh:
