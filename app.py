@@ -1,18 +1,19 @@
 # app.py
-# BTZ Cronograma — contagem regressiva em 1s (sem reload),
+# BTZ Cronograma — atualização completa a cada 1s (status + contadores),
 # fuso fixo Brasília, Início/Fim com HH:MM:SS (sem campo de duração).
 
 from __future__ import annotations
-import streamlit as st
-import pandas as pd
-from datetime import datetime, date, time, timedelta
+import time
+from datetime import datetime, date, time as dtime, timedelta
 from zoneinfo import ZoneInfo
+
+import pandas as pd
+import streamlit as st
 
 # ---------------- Config ----------------
 st.set_page_config(page_title="BTZ | Cronograma de Pista", page_icon="🗓️", layout="wide")
 
-TZ_NAME = "America/Sao_Paulo"   # sempre Brasília
-TZINFO = ZoneInfo(TZ_NAME)
+TZINFO = ZoneInfo("America/Sao_Paulo")  # sempre Brasília
 
 STATUS_DONE = "Concluída"
 STATUS_RUNNING = "Em execução"
@@ -28,7 +29,7 @@ COLOR_FUTURE = "#ecf0f1"
 def now_br() -> datetime:
     return datetime.now(TZINFO)
 
-def parse_time_str(s: str) -> time | None:
+def parse_time_str(s: str) -> dtime | None:
     s = (s or "").strip()
     for fmt in ("%H:%M:%S", "%H:%M"):
         try:
@@ -72,8 +73,7 @@ def style_table(df: pd.DataFrame) -> str:
                     .hide(axis="index")
                     .set_table_styles([
                         {"selector":"table","props":[("border-collapse","separate"),("border-spacing","0"),("width","100%"),("font-family","Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial")]},
-                        {"selector":"th","props":[("background","#111827"),("color","white"),("position","sticky"),
-                                                  ("top","0"),("z-index","1"),("padding","10px 8px"),("text-align","left")]},
+                        {"selector":"th","props":[("background","#111827"),("color","white"),("position","sticky"),("top","0"),("z-index","1"),("padding","10px 8px"),("text-align","left")]},
                         {"selector":"td","props":[("padding","10px 8px"),("border-bottom","1px solid #e5e7eb")]}
                     ])
                     .set_properties(**{"font-size":"0.95rem"}))
@@ -87,7 +87,7 @@ def ensure_state():
 ensure_state()
 
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Contadores ao vivo (1s) • Fuso fixo Brasília • Início/Fim com HH:MM:SS.")
+st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS.")
 
 # --------- Sidebar (Salvar/Carregar) ---------
 with st.sidebar:
@@ -153,12 +153,13 @@ else:
     df["Start"] = pd.to_datetime(start_str, errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
     df["End"]   = pd.to_datetime(end_str,   errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
 
-    df["Data"]   = df["Start"].dt.strftime("%d/%m/%Y")
-    df["Início"] = df["Start"].dt.strftime("%H:%M:%S")
-    df["Fim"]    = df["End"].dt.strftime("%H:%M:%S")
+    df["Data"]    = df["Start"].dt.strftime("%d/%m/%Y")
+    df["Início"]  = df["Start"].dt.strftime("%H:%M:%S")
+    df["Fim"]     = df["End"].dt.strftime("%H:%M:%S")
     df["Duração"] = (df["End"] - df["Start"]).apply(lambda x: human_td(x) if pd.notna(x) else "—")
     df = df.dropna(subset=["Start","End"]).sort_values(["Start","End"]).reset_index(drop=True)
 
+    # Classificação + métricas
     now = now_br()
     df = classify_rows(df, now)
 
@@ -167,71 +168,15 @@ else:
     current_row = running.iloc[0] if not running.empty else None
     next_row = next_up.iloc[0] if not next_up.empty else None
 
-    # -------- KPIs com contagem ao vivo 1s (JS) --------
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.metric("Agora (Brasília)", now.strftime("%d/%m %H:%M:%S"))
-
-    current_end_ms = int(current_row["End"].timestamp()*1000) if current_row is not None else "null"
-    next_start_ms  = int(next_row["Start"].timestamp()*1000) if next_row is not None else "null"
-
     with k2:
-        st.markdown(
-            """
-            <div style="font-size:0.9rem;color:#9ca3af;margin-bottom:4px;">⏱️ Tempo p/ acabar</div>
-            <div style="font-size:1.6rem;font-weight:600;" id="remain_current">—</div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.metric("⏱️ Tempo p/ acabar", human_td(current_row["End"] - now) if current_row is not None else "—")
     with k3:
-        st.markdown(
-            """
-            <div style="font-size:0.9rem;color:#9ca3af;margin-bottom:4px;">🕒 Tempo p/ próxima</div>
-            <div style="font-size:1.6rem;font-weight:600;" id="remain_next">—</div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.metric("🕒 Tempo p/ próxima", human_td(next_row["Start"] - now) if next_row is not None else "—")
     with k4:
         st.metric("Atividades concluídas", f"{int((df['Status']==STATUS_DONE).sum())}/{len(df)}")
-
-    st.markdown(
-        f"""
-        <script>
-        (function(){{
-          const endMs  = {current_end_ms};
-          const nextMs = {next_start_ms};
-
-          function fmt(ms){{
-            if(ms===null||ms===undefined) return "—";
-            const neg = ms < 0; ms = Math.abs(ms);
-            const total = Math.floor(ms/1000);
-            const h = Math.floor(total/3600);
-            const m = Math.floor((total%3600)/60);
-            const s = total%60;
-            const pad = n => String(n).padStart(2,'0');
-            const str = (h ? pad(h)+":"+pad(m)+":"+pad(s) : pad(m)+":"+pad(s));
-            return (neg?"-":"") + str;
-          }}
-
-          function tick(){{
-            const now = Date.now();
-            if(endMs){{
-              const el = document.getElementById("remain_current");
-              if(el) el.textContent = fmt(endMs - now);
-            }}
-            if(nextMs){{
-              const el2 = document.getElementById("remain_next");
-              if(el2) el2.textContent = fmt(nextMs - now);
-            }}
-          }}
-
-          tick();
-          setInterval(tick, 1000);
-        }})();
-        </script>
-        """,
-        unsafe_allow_html=True,
-    )
 
     # Progresso da atual
     if current_row is not None:
@@ -243,7 +188,6 @@ else:
     # Tabela estilizada
     st.markdown(style_table(df), unsafe_allow_html=True)
 
-    # Legenda e ações
     with st.expander("Legenda de cores"):
         st.dataframe(pd.DataFrame({
             "Status":[STATUS_RUNNING, STATUS_DONE, STATUS_NEXT, STATUS_UPCOMING],
@@ -259,8 +203,8 @@ else:
         if st.session_state.tasks:
             st.session_state.tasks.pop()
             st.experimental_rerun()
-    c3.caption("Contadores em 1s | Fuso fixo: America/Sao_Paulo | Início/Fim aceitam HH:MM:SS.")
+    c3.caption("Atualização automática de 1s | Fuso fixo: America/Sao_Paulo | Início/Fim em HH:MM:SS.")
 
-# Footer
-st.write("")
-st.markdown("<div style='text-align:center;color:#94a3b8'>Feito com ❤️ para operações de pista BTZ | Streamlit</div>", unsafe_allow_html=True)
+# ---------------- Auto-refresh 1s (reexecução do app) ----------------
+time.sleep(1.0)
+st.experimental_rerun()
