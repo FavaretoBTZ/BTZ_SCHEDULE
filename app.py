@@ -1,7 +1,7 @@
 # app.py
-# Streamlit schedule tracker — clean & visual
-# Run locally: streamlit run app.py
-# Deploy on Streamlit Cloud: push to GitHub and select app.py
+# Streamlit schedule tracker — clean & visual (versão corrigida)
+# Run local:  streamlit run app.py
+# Deploy:     suba no GitHub e aponte o Streamlit Cloud para app.py
 
 from __future__ import annotations
 import streamlit as st
@@ -45,31 +45,49 @@ def classify_rows(df: pd.DataFrame, now: datetime) -> pd.DataFrame:
             status.append(STATUS_UPCOMING)
     df["Status"] = status
 
-    # Label the next upcoming as "Próxima"
+    # Marca a primeira futura como "Próxima"
     upcoming_idx = df.index[df["Status"] == STATUS_UPCOMING].tolist()
     if upcoming_idx:
         df.loc[upcoming_idx[0], "Status"] = STATUS_NEXT
     return df
 
 def style_table(df: pd.DataFrame) -> str:
-    # Build a styled HTML table with row-based background colors
+    """
+    Gera tabela estilizada sem dar KeyError se alguma coluna não existir.
+    Usa as colunas formatadas se disponíveis; caso contrário, cai no mínimo viável.
+    """
+    # prioridades de colunas para exibir
+    preferred = ["Data", "Início", "Fim", "Atividade", "Duração", "Status"]
+    fallback  = ["Start", "End", "Activity", "Status"]
+
+    cols = [c for c in preferred if c in df.columns]
+    if not cols:  # se ainda não formatou, usa o mínimo
+        cols = [c for c in fallback if c in df.columns]
+
+    view = df[cols].copy()
+
     def row_style(row):
-        if row["Status"] == STATUS_RUNNING:
+        if "Status" in row and row["Status"] == STATUS_RUNNING:
             return [f"background-color: {COLOR_RUNNING}; color: #0b5345;"] * len(row)
-        if row["Status"] == STATUS_DONE:
+        if "Status" in row and row["Status"] == STATUS_DONE:
             return [f"background-color: {COLOR_PAST}; color: #1b4f72;"] * len(row)
-        if row["Status"] == STATUS_NEXT:
+        if "Status" in row and row["Status"] == STATUS_NEXT:
             return [f"background-color: {COLOR_NEXT}; color: #7d6608;"] * len(row)
         return [f"background-color: {COLOR_FUTURE}; color: #2c3e50;"] * len(row)
 
-    view = df[["Data", "Início", "Fim", "Atividade", "Duração", "Status"]].copy()
     styler = (
         view.style
         .apply(row_style, axis=1)
         .hide(axis="index")
         .set_table_styles([
-            {"selector": "table", "props": [("border-collapse","separate"),("border-spacing","0"),("width","100%"),("font-family","Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial")]},
-            {"selector": "th", "props": [("background","#111827"),("color","white"),("position","sticky"),("top","0"),("z-index","1"),("padding","10px 8px"),("text-align","left")]},
+            {"selector": "table", "props": [
+                ("border-collapse","separate"),("border-spacing","0"),("width","100%"),
+                ("font-family","Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial")
+            ]},
+            {"selector": "th", "props": [
+                ("background","#111827"),("color","white"),("position","sticky"),
+                ("top","0"),("z-index","1"),("padding","10px 8px"),("text-align","left")
+            ]},
             {"selector": "td", "props": [("padding","10px 8px"),("border-bottom","1px solid #e5e7eb")]},
         ])
         .set_properties(**{"font-size":"0.95rem"})
@@ -122,10 +140,9 @@ with st.sidebar:
         st.session_state.tasks = tasks
         st.success("Cronograma carregado.")
 
-# Simple auto-refresh using JS
+# Auto-refresh simples via JS (para Cloud)
 if 'js_ref' not in st.session_state:
     st.session_state.js_ref = 0
-
 if auto:
     st.session_state.js_ref += 1
     st.markdown(f"""
@@ -136,7 +153,7 @@ if auto:
     </script>
     """, unsafe_allow_html=True)
 
-# Input form
+# Formulário de inclusão
 with st.container():
     st.subheader("➕ Nova atividade")
     c1, c2, c3, c4, c5 = st.columns([1,1,1.2,3,1])
@@ -166,36 +183,43 @@ with st.container():
             })
             st.success("Atividade adicionada.")
 
-# Build DataFrame with proper datetimes
+# Montagem do DataFrame
 raw = to_df(st.session_state.tasks)
 
 if raw.empty:
     st.info("Nenhuma atividade cadastrada ainda. Use o formulário acima para começar.")
 else:
     tzinfo = ZoneInfo(st.session_state.tz)
-    # Parse to datetime
+
+    # Parse p/ datetime
     df = raw.copy()
-    df["Start"] = pd.to_datetime(df["Date"] + " " + df["Start"]).dt.tz_localize(tzinfo, nonexistent="shift_forward", ambiguous="NaT")
-    df["End"] = pd.to_datetime(df["Date"] + " " + df["End"]).dt.tz_localize(tzinfo, nonexistent="shift_forward", ambiguous="NaT")
+    df["Start"] = pd.to_datetime(df["Date"] + " " + df["Start"]).dt.tz_localize(
+        tzinfo, nonexistent="shift_forward", ambiguous="NaT"
+    )
+    df["End"] = pd.to_datetime(df["Date"] + " " + df["End"]).dt.tz_localize(
+        tzinfo, nonexistent="shift_forward", ambiguous="NaT"
+    )
+
+    # Colunas de exibição
     df["Data"] = df["Start"].dt.strftime("%d/%m/%Y")
     df["Início"] = df["Start"].dt.strftime("%H:%M")
     df["Fim"] = df["End"].dt.strftime("%H:%M")
     df["Duração"] = (df["End"] - df["Start"]).apply(lambda x: human_td(x))
 
-    # Sort
+    # Ordena
     df = df.sort_values(["Start", "End"]).reset_index(drop=True)
 
     # Status
     now = now_tz(st.session_state.tz)
     df = classify_rows(df, now)
 
-    # Current & next
+    # Atual e próxima
     running = df[df["Status"] == STATUS_RUNNING]
     next_up = df[df["Status"] == STATUS_NEXT]
     current_row = running.iloc[0] if not running.empty else None
     next_row = next_up.iloc[0] if not next_up.empty else None
 
-    # KPI cards
+    # KPIs
     k1, k2, k3, k4 = st.columns(4)
     with k1:
         st.metric("Agora", now.strftime("%d/%m %H:%M:%S"))
@@ -216,18 +240,18 @@ else:
         done = int((df["Status"] == STATUS_DONE).sum())
         st.metric("Atividades concluídas", f"{done}/{total}")
 
-    # Progress for current
+    # Barra de progresso da atual
     if current_row is not None:
         total_secs = (current_row["End"] - current_row["Start"]).total_seconds()
         elapsed = (now - current_row["Start"]).total_seconds()
         pct = max(0.0, min(1.0, elapsed / total_secs)) if total_secs > 0 else 0.0
         st.progress(pct, text=f"Em execução: {current_row['Activity']} ({int(pct*100)}%)")
 
-    # Styled table
+    # Tabela estilizada (AGORA SEM KEYERROR)
     html = style_table(df)
     st.markdown(html, unsafe_allow_html=True)
 
-    # Tiny legend
+    # Legenda
     with st.expander("Legenda de cores"):
         leg = pd.DataFrame({
             "Status": [STATUS_RUNNING, STATUS_DONE, STATUS_NEXT, STATUS_UPCOMING],
@@ -235,7 +259,7 @@ else:
         })
         st.dataframe(leg, hide_index=True, use_container_width=True)
 
-    # Actions
+    # Ações
     st.divider()
     c1, c2, c3 = st.columns([1,1,2])
     with c1:
