@@ -2,8 +2,8 @@
 # BTZ Cronograma — atualização 1s, fuso fixo Brasília,
 # criação/edição em expanders, TABELA em painel rolável (header visível),
 # coluna "Atividade" após "Duração".
-# ENCADEAMENTO: após editar, as atividades seguintes do mesmo dia
-# são reajustadas com GAP fixo de 1 minuto.
+# ENCADEAMENTO: atividades encadeadas com GAP fixo de 1 minuto.
+# Compatibilidade: aceita dados antigos sem DurationSec (calcula a partir de Start/End).
 
 from __future__ import annotations
 import time
@@ -11,12 +11,13 @@ from datetime import datetime, date, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import numpy as np
 import streamlit as st
 
 # ---------------- Config ----------------
 st.set_page_config(page_title="BTZ | Cronograma de Pista", page_icon="🗓️", layout="wide")
-TZINFO = ZoneInfo("America/Sao_Paulo")  # sempre Brasília
-GAP = timedelta(minutes=1)              # GAP FIXO entre atividades encadeadas
+TZINFO = ZoneInfo("America/Sao_Paulo")   # sempre Brasília
+GAP = timedelta(minutes=1)               # GAP FIXO entre atividades encadeadas
 
 STATUS_DONE = "Concluída"
 STATUS_RUNNING = "Em execução"
@@ -83,7 +84,7 @@ def parse_duration_hms(s: str) -> timedelta | None:
         return None
 
 def duration_to_hms(td: timedelta) -> str:
-    total = int(td.total_seconds())
+    total = max(0, int(td.total_seconds()))
     h, rem = divmod(total, 3600)
     m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
@@ -134,47 +135,88 @@ def ensure_state():
     if "tasks" not in st.session_state:
         st.session_state.tasks = []
 
+def _safe_int(x, default=0):
+    try:
+        if pd.isna(x): return default
+        return int(x)
+    except Exception:
+        return default
+
+def normalize_tasks(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Garante as colunas: Date, Start, DurationSec, Activity.
+    Se DurationSec faltar, tenta calcular por Start/End (mesmo dataset antigo).
+    """
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame(columns=["Date","Start","DurationSec","Activity"])
+
+    out = df_raw.copy()
+
+    # Garantir colunas básicas
+    for c in ["Date","Start","Activity"]:
+        if c not in out.columns:
+            out[c] = ""
+
+    # Se não existir DurationSec, tenta derivar de End (versões antigas)
+    if "DurationSec" not in out.columns or out["DurationSec"].isna().all():
+        if "End" in out.columns:
+            # usa a mesma data para computar delta
+            try:
+                start_dt = pd.to_datetime(out["Date"].astype(str) + " " + out["Start"].astype(str), errors="coerce")
+                end_dt   = pd.to_datetime(out["Date"].astype(str) + " " + out["End"].astype(str), errors="coerce")
+                dur = (end_dt - start_dt).dt.total_seconds().fillna(0).astype(int).clip(lower=0)
+                out["DurationSec"] = dur
+            except Exception:
+                out["DurationSec"] = 0
+        else:
+            out["DurationSec"] = 0
+    else:
+        out["DurationSec"] = out["DurationSec"].apply(_safe_int)
+
+    # Linha a prova de tipos
+    out["Date"] = out["Date"].astype(str)
+    out["Start"] = out["Start"].astype(str)
+    out["Activity"] = out["Activity"].astype(str)
+
+    return out[["Date","Start","DurationSec","Activity"]]
+
 def compute_schedule(df_raw: pd.DataFrame) -> pd.DataFrame:
     """Monta Start/End reais (com TZ) e aplica encadeamento com GAP dentro de cada data."""
-    if df_raw.empty:
-        return pd.DataFrame(columns=["Start","End","Date","DurationSec","Activity"])
+    base = normalize_tasks(df_raw)
+    if base.empty:
+        return pd.DataFrame(columns=["Date","Start","End","DurationSec","Activity"])
 
-    # Monta datetime com base em Date + Start (local Brasília)
-    out = df_raw.copy()
-    out["Date"] = pd.to_datetime(out["Date"]).dt.date
-    out["Start_dt"] = pd.to_datetime(out["Date"].astype(str) + " " + out["Start"].astype(str)).dt.tz_localize(TZINFO)
+    base["Date"] = pd.to_datetime(base["Date"], errors="coerce").dt.date
+    base["Start_dt"] = pd.to_datetime(base["Date"].astype(str) + " " + base["Start"].astype(str), errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward")
 
     # Ordena por data e início
-    out = out.sort_values(["Date","Start_dt"]).reset_index(drop=True)
+    base = base.dropna(subset=["Date","Start_dt"]).sort_values(["Date","Start_dt"]).reset_index(drop=True)
 
     # Aplica encadeamento por dia
     prev_end_by_day: dict[date, datetime] = {}
-    new_start_list = []
-    new_end_list = []
-    for _, row in out.iterrows():
+    starts, ends = [], []
+    for _, row in base.iterrows():
         d = row["Date"]
-        start_dt: datetime = row["Start_dt"]
-        dur = timedelta(seconds=int(row["DurationSec"]))
-        # Se já existe atividade antes neste dia, força novo início = fim anterior + GAP
+        st_dt: datetime = row["Start_dt"]
+        dur = timedelta(seconds=_safe_int(row["DurationSec"], 0))
         if d in prev_end_by_day:
-            start_dt = prev_end_by_day[d] + GAP
-        end_dt = start_dt + dur
-        prev_end_by_day[d] = end_dt
-        new_start_list.append(start_dt)
-        new_end_list.append(end_dt)
+            st_dt = prev_end_by_day[d] + GAP
+        en_dt = st_dt + dur
+        prev_end_by_day[d] = en_dt
+        starts.append(st_dt); ends.append(en_dt)
 
-    out["Start"] = new_start_list
-    out["End"] = new_end_list
-    return out[["Date","Start","End","DurationSec","Activity"]]
+    base["Start"] = starts
+    base["End"] = ends
+    return base[["Date","Start","End","DurationSec","Activity"]]
 
 # ---------------- Estado ----------------
 ensure_state()
 
 # ---------------- Topo ----------------
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Tabela em painel rolável • Atualização 1s • Fuso Brasília • Encadeamento com GAP fixo de 1 minuto entre atividades.")
+st.caption("Tabela em painel rolável • Atualização 1s • Fuso Brasília • Encadeamento com GAP de 1 min • Compatível com dados antigos.")
 
-# ---- Nova atividade (expander) -> FIM calculado automaticamente pela duração ----
+# ---- Nova atividade (expander) -> FIM calculado pela duração ----
 with st.expander("»»", expanded=False):
     c1, c2, c3 = st.columns([1,1.5,3.5])
     with c1:
@@ -190,7 +232,7 @@ with st.expander("»»", expanded=False):
             st.error("Informe a atividade.")
         else:
             t_start = parse_time_str(t_start_str)
-            dur = parse_duration_hms(dur_str)  # aceita MM:SS aqui
+            dur = parse_duration_hms(dur_str)  # aceita MM:SS
             if t_start is None:
                 st.error("Use o formato HH:MM:SS em **Início**.")
             elif dur is None:
@@ -202,7 +244,7 @@ with st.expander("»»", expanded=False):
                     "DurationSec": int(dur.total_seconds()),
                     "Activity": activity.strip(),
                 })
-                st.success(f"Atividade adicionada.")
+                st.success("Atividade adicionada.")
                 st.rerun()
 
 # ---- Editar atividades (expander) ----
@@ -210,17 +252,7 @@ with st.expander("»»", expanded=False):
     if not st.session_state.tasks:
         st.info("Nenhuma atividade para editar ainda.")
     else:
-        # Monta tabela de edição com Duration em HH:MM:SS
-        raw = pd.DataFrame(st.session_state.tasks).reset_index().rename(columns={"index":"ID"})
-        if "DurationSec" not in raw.columns:
-            # Compat: se veio de versão antiga (Start/End), calcule DurationSec
-            if {"Start","End"}.issubset(raw.columns):
-                start_dt = pd.to_datetime(date.today().isoformat() + " " + raw["Start"])
-                end_dt = pd.to_datetime(date.today().isoformat() + " " + raw["End"])
-                raw["DurationSec"] = (end_dt - start_dt).dt.total_seconds().astype(int).clip(lower=0)
-            else:
-                raw["DurationSec"] = 0
-
+        raw = normalize_tasks(pd.DataFrame(st.session_state.tasks)).reset_index().rename(columns={"index":"ID"})
         raw["Duration"] = raw["DurationSec"].apply(lambda s: duration_to_hms(timedelta(seconds=int(s))))
 
         edited = st.data_editor(
@@ -245,7 +277,6 @@ with st.expander("»»", expanded=False):
                                         help="Informe o ID da linha para excluir.")
             do_delete = st.button("🗑️ Remover ID", use_container_width=True)
 
-        # Remoção (visual); confirma ao salvar
         if do_delete:
             if to_delete in edited["ID"].values:
                 edited = edited[edited["ID"] != to_delete].reset_index(drop=True)
@@ -256,7 +287,6 @@ with st.expander("»»", expanded=False):
         if do_save:
             new_tasks: list[dict] = []
             errors: list[str] = []
-
             for i, r in edited.iterrows():
                 date_str = str(r.get("Date","")).strip()
                 start_str = str(r.get("Start","")).strip()
@@ -265,16 +295,13 @@ with st.expander("»»", expanded=False):
 
                 if not (date_str and start_str and dur_str and act):
                     errors.append(f"Linha {i}: campos vazios."); continue
-                # valida data
                 try:
                     d_parsed = datetime.fromisoformat(date_str).date()
                 except ValueError:
                     errors.append(f"Linha {i}: Date inválida (use YYYY-MM-DD)."); continue
-                # valida início
                 t_start = parse_time_str(start_str)
                 if t_start is None:
                     errors.append(f"Linha {i}: Início inválido (use HH:MM:SS)."); continue
-                # valida duração
                 dur = parse_duration_hms(dur_str)
                 if dur is None:
                     errors.append(f"Linha {i}: Duração inválida (use HH:MM:SS ou MM:SS)."); continue
@@ -289,14 +316,13 @@ with st.expander("»»", expanded=False):
             if errors:
                 st.error("Não foi possível salvar por causa de erros:\n- " + "\n- ".join(errors))
             else:
-                # Grava e reencadeia (o reencadeamento acontece na renderização usando compute_schedule)
                 st.session_state.tasks = new_tasks
                 st.success("Alterações salvas e atividades reencadeadas.")
                 st.rerun()
 
 # ---- KPIs + barra ----
 if st.session_state.tasks:
-    base_df = pd.DataFrame(st.session_state.tasks)
+    base_df = normalize_tasks(pd.DataFrame(st.session_state.tasks))
     sched = compute_schedule(base_df)
 
     now = now_br()
@@ -328,7 +354,7 @@ if st.session_state.tasks:
 if not st.session_state.tasks:
     st.info("Sem atividades cadastradas.")
 else:
-    base_df = pd.DataFrame(st.session_state.tasks)
+    base_df = normalize_tasks(pd.DataFrame(st.session_state.tasks))
     sched = compute_schedule(base_df)
     sched["Data"]      = sched["Start"].dt.strftime("%d/%m/%Y")
     sched["Início"]    = sched["Start"].dt.strftime("%H:%M:%S")
