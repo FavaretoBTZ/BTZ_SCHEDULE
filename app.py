@@ -1,6 +1,6 @@
 # app.py
-# BTZ Cronograma — atualização 1s (status + contadores), fuso fixo Brasília,
-# Início/Fim com HH:MM:SS e edição de atividades (em EXPANDER fechado).
+# BTZ Cronograma — atualização 1s, fuso fixo Brasília,
+# Início/Fim com HH:MM:SS, edição em EXPANDER, e tabela renderizada UMA vez.
 
 from __future__ import annotations
 import time
@@ -89,7 +89,7 @@ def ensure_state():
 ensure_state()
 
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS • Edição de atividades.")
+st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS • Edição de atividades (expander).")
 
 # --------- Sidebar (Salvar/Carregar & Edição) ---------
 with st.sidebar:
@@ -153,7 +153,6 @@ if st.button("Adicionar", type="primary"):
             st.success("Atividade adicionada.")
 
 # ------------- Edição de atividades (EXPANDER oculto) -------------
-# Mostra só as setinhas (»») — ao clicar, abre para editar/remover.
 with st.expander("»»", expanded=False):
     if not st.session_state.tasks:
         st.info("Nenhuma atividade para editar ainda.")
@@ -271,7 +270,9 @@ else:
         pct = max(0.0, min(1.0, elapsed / total_secs)) if total_secs > 0 else 0.0
         st.progress(pct, text=f"Em execução: {current_row['Activity']} ({int(pct*100)}%)")
 
-    st.markdown(style_table(df), unsafe_allow_html=True)
+    # === TABELA: renderizada UMA única vez via placeholder ===
+    table_slot = st.empty()
+    table_slot.markdown(style_table(df), unsafe_allow_html=True)
 
 # ---------------- Auto-refresh 1s (pausável) ----------------
 if not st.session_state.pause_refresh:
