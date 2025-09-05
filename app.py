@@ -1,6 +1,6 @@
 # app.py
-# BTZ Cronograma — contagem regressiva em 1s (sem reload), fuso fixo Brasília,
-# Início/Fim com segundos (HH:MM:SS)
+# BTZ Cronograma — contagem regressiva em 1s (sem reload),
+# fuso fixo Brasília, Início/Fim com HH:MM:SS (sem campo de duração).
 
 from __future__ import annotations
 import streamlit as st
@@ -72,7 +72,8 @@ def style_table(df: pd.DataFrame) -> str:
                     .hide(axis="index")
                     .set_table_styles([
                         {"selector":"table","props":[("border-collapse","separate"),("border-spacing","0"),("width","100%"),("font-family","Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial")]},
-                        {"selector":"th","props":[("background","#111827"),("color","white"),("position","sticky"),("top","0"),("z-index","1"),("padding","10px 8px"),("text-align","left")]},
+                        {"selector":"th","props":[("background","#111827"),("color","white"),("position","sticky"),
+                                                  ("top","0"),("z-index","1"),("padding","10px 8px"),("text-align","left")]},
                         {"selector":"td","props":[("padding","10px 8px"),("border-bottom","1px solid #e5e7eb")]}
                     ])
                     .set_properties(**{"font-size":"0.95rem"}))
@@ -80,7 +81,7 @@ def style_table(df: pd.DataFrame) -> str:
 
 def ensure_state():
     if "tasks" not in st.session_state:
-        st.session_state.tasks = []  # {Date, Start, End, Activity, DurationSeconds?}
+        st.session_state.tasks = []  # {Date, Start, End, Activity}
 
 # ---------------- Estado ----------------
 ensure_state()
@@ -92,66 +93,52 @@ st.caption("Contadores ao vivo (1s) • Fuso fixo Brasília • Início/Fim com 
 with st.sidebar:
     st.header("💾 Salvar / Carregar")
     df_csv = pd.DataFrame(st.session_state.tasks) if st.session_state.tasks else pd.DataFrame(
-        columns=["Date","Start","End","Activity","DurationSeconds"]
+        columns=["Date","Start","End","Activity"]
     )
     st.download_button("⬇️ Baixar CSV", df_csv.to_csv(index=False).encode("utf-8"),
                        "cronograma.csv", "text/csv", use_container_width=True)
     up = st.file_uploader("Carregar CSV", type=["csv"])
     if up is not None:
         df_up = pd.read_csv(up)
-        for c in ["Date","Start","End","Activity","DurationSeconds"]:
+        for c in ["Date","Start","End","Activity"]:
             if c not in df_up.columns: df_up[c] = None
         st.session_state.tasks = [
             {"Date": str(r["Date"]) if pd.notna(r["Date"]) else "",
              "Start": str(r["Start"]) if pd.notna(r["Start"]) else "",
              "End": str(r["End"]) if pd.notna(r["End"]) else "",
-             "Activity": str(r["Activity"]) if pd.notna(r["Activity"]) else "",
-             "DurationSeconds": int(r["DurationSeconds"]) if pd.notna(r["DurationSeconds"]) else None}
+             "Activity": str(r["Activity"]) if pd.notna(r["Activity"]) else ""}
             for _, r in df_up.iterrows()
         ]
         st.success("Cronograma carregado.")
 
-# ------------- Formulário -------------
+# ------------- Formulário (sem duração) -------------
 st.subheader("➕ Nova atividade")
-c1, c2, c3, c4, c5 = st.columns([1,1.3,1.6,3,1.2])
+c1, c2, c3, c4 = st.columns([1,1.5,1.7,3.8])
 with c1:
     d = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
 with c2:
     t_start_str = st.text_input("Início (HH:MM:SS)", value="08:00:00", placeholder="HH:MM:SS")
 with c3:
-    t_end_str = st.text_input("Fim (opcional) (HH:MM:SS)", value="09:00:00", placeholder="HH:MM:SS")
+    t_end_str = st.text_input("Fim (HH:MM:SS)", value="09:00:00", placeholder="HH:MM:SS")
 with c4:
     activity = st.text_input("Atividade", placeholder="Briefing / Warmup / Box / etc.")
-with c5:
-    dur_secs = st.number_input("Duração (segundos) (opcional)", min_value=0, step=10, value=0)
 
 if st.button("Adicionar", type="primary"):
     if not activity.strip():
         st.error("Informe a atividade.")
     else:
         t_start = parse_time_str(t_start_str)
-        if t_start is None:
-            st.error("Formato inválido em **Início**. Use HH:MM:SS.")
+        t_end = parse_time_str(t_end_str)
+        if t_start is None or t_end is None:
+            st.error("Use o formato HH:MM:SS em **Início** e **Fim**.")
+        elif datetime.combine(d, t_end) <= datetime.combine(d, t_start):
+            st.error("**Fim** deve ser após **Início**.")
         else:
-            if dur_secs and dur_secs > 0:
-                end_dt = datetime.combine(d, t_start).replace(tzinfo=TZINFO) + timedelta(seconds=int(dur_secs))
-                end_str = end_dt.strftime("%H:%M:%S")
-            else:
-                t_end = parse_time_str(t_end_str)
-                if t_end is None:
-                    st.error("Informe **Fim** em HH:MM:SS ou preencha **Duração (segundos)**.")
-                    st.stop()
-                if datetime.combine(d, t_end) <= datetime.combine(d, t_start):
-                    st.error("**Fim** deve ser após **Início** (ou use duração em segundos).")
-                    st.stop()
-                end_str = t_end.strftime("%H:%M:%S")
-
             st.session_state.tasks.append({
                 "Date": d.isoformat(),
                 "Start": t_start.strftime("%H:%M:%S"),
-                "End": end_str,
+                "End": t_end.strftime("%H:%M:%S"),
                 "Activity": activity.strip(),
-                "DurationSeconds": int(dur_secs) if dur_secs and dur_secs > 0 else None,
             })
             st.success("Atividade adicionada.")
 
@@ -165,10 +152,6 @@ else:
     end_str   = df["Date"].fillna("").astype(str) + " " + df["End"].fillna("").astype(str)
     df["Start"] = pd.to_datetime(start_str, errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
     df["End"]   = pd.to_datetime(end_str,   errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
-
-    mask = df.get("DurationSeconds", pd.Series(dtype=object)).notna() & df["Start"].notna()
-    if mask.any():
-        df.loc[mask, "End"] = df.loc[mask, "Start"] + df.loc[mask, "DurationSeconds"].astype(int).apply(lambda s: timedelta(seconds=s))
 
     df["Data"]   = df["Start"].dt.strftime("%d/%m/%Y")
     df["Início"] = df["Start"].dt.strftime("%H:%M:%S")
@@ -184,19 +167,17 @@ else:
     current_row = running.iloc[0] if not running.empty else None
     next_row = next_up.iloc[0] if not next_up.empty else None
 
-    # -------- KPIs com contagem ao vivo 1s (JS atualiza os textos) --------
+    # -------- KPIs com contagem ao vivo 1s (JS) --------
     k1, k2, k3, k4 = st.columns(4)
-
     with k1:
         st.metric("Agora (Brasília)", now.strftime("%d/%m %H:%M:%S"))
 
-    # Renderiza dois contadores como spans e injeta script para atualizar a cada 1s
     current_end_ms = int(current_row["End"].timestamp()*1000) if current_row is not None else "null"
     next_start_ms  = int(next_row["Start"].timestamp()*1000) if next_row is not None else "null"
 
     with k2:
         st.markdown(
-            f"""
+            """
             <div style="font-size:0.9rem;color:#9ca3af;margin-bottom:4px;">⏱️ Tempo p/ acabar</div>
             <div style="font-size:1.6rem;font-weight:600;" id="remain_current">—</div>
             """,
@@ -204,7 +185,7 @@ else:
         )
     with k3:
         st.markdown(
-            f"""
+            """
             <div style="font-size:0.9rem;color:#9ca3af;margin-bottom:4px;">🕒 Tempo p/ próxima</div>
             <div style="font-size:1.6rem;font-weight:600;" id="remain_next">—</div>
             """,
@@ -213,7 +194,6 @@ else:
     with k4:
         st.metric("Atividades concluídas", f"{int((df['Status']==STATUS_DONE).sum())}/{len(df)}")
 
-    # Script JS para atualizar os spans a cada 1s (sem reload)
     st.markdown(
         f"""
         <script>
@@ -235,12 +215,12 @@ else:
 
           function tick(){{
             const now = Date.now();
-            if(endMs) {{
-              const el = window.document.getElementById("remain_current");
+            if(endMs){{
+              const el = document.getElementById("remain_current");
               if(el) el.textContent = fmt(endMs - now);
             }}
             if(nextMs){{
-              const el2 = window.document.getElementById("remain_next");
+              const el2 = document.getElementById("remain_next");
               if(el2) el2.textContent = fmt(nextMs - now);
             }}
           }}
