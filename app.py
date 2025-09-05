@@ -1,13 +1,14 @@
 # app.py
-# Streamlit schedule tracker — auto-refresh 1s (inclusive nos KPIs),
-# fuso fixo Brasília, Início/Fim com segundos (HH:MM:SS)
+# BTZ Cronograma — contagem regressiva em 1s (sem reload), fuso fixo Brasília,
+# Início/Fim com segundos (HH:MM:SS)
+
 from __future__ import annotations
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, time, timedelta
 from zoneinfo import ZoneInfo
 
-# ---------- Config ----------
+# ---------------- Config ----------------
 st.set_page_config(page_title="BTZ | Cronograma de Pista", page_icon="🗓️", layout="wide")
 
 TZ_NAME = "America/Sao_Paulo"   # sempre Brasília
@@ -23,7 +24,7 @@ COLOR_RUNNING = "#58d68d"
 COLOR_NEXT = "#f9e79f"
 COLOR_FUTURE = "#ecf0f1"
 
-# ---------- Helpers ----------
+# ---------------- Helpers ----------------
 def now_br() -> datetime:
     return datetime.now(TZINFO)
 
@@ -81,23 +82,20 @@ def ensure_state():
     if "tasks" not in st.session_state:
         st.session_state.tasks = []  # {Date, Start, End, Activity, DurationSeconds?}
 
-# ---------- Estado e Auto-refresh 1s ----------
+# ---------------- Estado ----------------
 ensure_state()
 
-# Preferimos autorefresh nativo; se não existir, usamos JS.
-if hasattr(st, "autorefresh"):
-    st.autorefresh(interval=1000, key="auto1")   # Streamlit 1.37+
-else:
-    st.markdown("<script>setTimeout(function(){window.location.reload();},1000);</script>", unsafe_allow_html=True)
-
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Auto-refresh 1s • Fuso fixo Brasília • Campos Início/Fim com segundos (HH:MM:SS).")
+st.caption("Contadores ao vivo (1s) • Fuso fixo Brasília • Início/Fim com HH:MM:SS.")
 
-# ---------- Sidebar (Salvar/Carregar) ----------
+# --------- Sidebar (Salvar/Carregar) ---------
 with st.sidebar:
     st.header("💾 Salvar / Carregar")
-    df_csv = pd.DataFrame(st.session_state.tasks) if st.session_state.tasks else pd.DataFrame(columns=["Date","Start","End","Activity","DurationSeconds"])
-    st.download_button("⬇️ Baixar CSV", df_csv.to_csv(index=False).encode("utf-8"), "cronograma.csv", "text/csv", use_container_width=True)
+    df_csv = pd.DataFrame(st.session_state.tasks) if st.session_state.tasks else pd.DataFrame(
+        columns=["Date","Start","End","Activity","DurationSeconds"]
+    )
+    st.download_button("⬇️ Baixar CSV", df_csv.to_csv(index=False).encode("utf-8"),
+                       "cronograma.csv", "text/csv", use_container_width=True)
     up = st.file_uploader("Carregar CSV", type=["csv"])
     if up is not None:
         df_up = pd.read_csv(up)
@@ -113,7 +111,7 @@ with st.sidebar:
         ]
         st.success("Cronograma carregado.")
 
-# ---------- Formulário ----------
+# ------------- Formulário -------------
 st.subheader("➕ Nova atividade")
 c1, c2, c3, c4, c5 = st.columns([1,1.3,1.6,3,1.2])
 with c1:
@@ -157,7 +155,7 @@ if st.button("Adicionar", type="primary"):
             })
             st.success("Atividade adicionada.")
 
-# ---------- Construção da visão ----------
+# ------------- Construção da visão -------------
 if not st.session_state.tasks:
     st.info("Nenhuma atividade cadastrada ainda. Use o formulário acima para começar.")
 else:
@@ -168,7 +166,7 @@ else:
     df["Start"] = pd.to_datetime(start_str, errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
     df["End"]   = pd.to_datetime(end_str,   errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
 
-    mask = df["DurationSeconds"].notna() & df["Start"].notna()
+    mask = df.get("DurationSeconds", pd.Series(dtype=object)).notna() & df["Start"].notna()
     if mask.any():
         df.loc[mask, "End"] = df.loc[mask, "Start"] + df.loc[mask, "DurationSeconds"].astype(int).apply(lambda s: timedelta(seconds=s))
 
@@ -186,12 +184,74 @@ else:
     current_row = running.iloc[0] if not running.empty else None
     next_row = next_up.iloc[0] if not next_up.empty else None
 
-    # ---------- KPIs em placeholders (recomputados a cada 1s) ----------
+    # -------- KPIs com contagem ao vivo 1s (JS atualiza os textos) --------
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Agora (Brasília)", now.strftime("%d/%m %H:%M:%S"))
-    k2.metric("⏱️ Tempo p/ acabar", human_td(current_row["End"] - now) if current_row is not None else "—")
-    k3.metric("🕒 Tempo p/ próxima", human_td(next_row["Start"] - now) if next_row is not None else "—")
-    k4.metric("Atividades concluídas", f"{int((df['Status']==STATUS_DONE).sum())}/{len(df)}")
+
+    with k1:
+        st.metric("Agora (Brasília)", now.strftime("%d/%m %H:%M:%S"))
+
+    # Renderiza dois contadores como spans e injeta script para atualizar a cada 1s
+    current_end_ms = int(current_row["End"].timestamp()*1000) if current_row is not None else "null"
+    next_start_ms  = int(next_row["Start"].timestamp()*1000) if next_row is not None else "null"
+
+    with k2:
+        st.markdown(
+            f"""
+            <div style="font-size:0.9rem;color:#9ca3af;margin-bottom:4px;">⏱️ Tempo p/ acabar</div>
+            <div style="font-size:1.6rem;font-weight:600;" id="remain_current">—</div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with k3:
+        st.markdown(
+            f"""
+            <div style="font-size:0.9rem;color:#9ca3af;margin-bottom:4px;">🕒 Tempo p/ próxima</div>
+            <div style="font-size:1.6rem;font-weight:600;" id="remain_next">—</div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with k4:
+        st.metric("Atividades concluídas", f"{int((df['Status']==STATUS_DONE).sum())}/{len(df)}")
+
+    # Script JS para atualizar os spans a cada 1s (sem reload)
+    st.markdown(
+        f"""
+        <script>
+        (function(){{
+          const endMs  = {current_end_ms};
+          const nextMs = {next_start_ms};
+
+          function fmt(ms){{
+            if(ms===null||ms===undefined) return "—";
+            const neg = ms < 0; ms = Math.abs(ms);
+            const total = Math.floor(ms/1000);
+            const h = Math.floor(total/3600);
+            const m = Math.floor((total%3600)/60);
+            const s = total%60;
+            const pad = n => String(n).padStart(2,'0');
+            const str = (h ? pad(h)+":"+pad(m)+":"+pad(s) : pad(m)+":"+pad(s));
+            return (neg?"-":"") + str;
+          }}
+
+          function tick(){{
+            const now = Date.now();
+            if(endMs) {{
+              const el = window.document.getElementById("remain_current");
+              if(el) el.textContent = fmt(endMs - now);
+            }}
+            if(nextMs){{
+              const el2 = window.document.getElementById("remain_next");
+              if(el2) el2.textContent = fmt(nextMs - now);
+            }}
+          }}
+
+          tick();
+          setInterval(tick, 1000);
+        }})();
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
 
     # Progresso da atual
     if current_row is not None:
@@ -203,6 +263,7 @@ else:
     # Tabela estilizada
     st.markdown(style_table(df), unsafe_allow_html=True)
 
+    # Legenda e ações
     with st.expander("Legenda de cores"):
         st.dataframe(pd.DataFrame({
             "Status":[STATUS_RUNNING, STATUS_DONE, STATUS_NEXT, STATUS_UPCOMING],
@@ -218,7 +279,7 @@ else:
         if st.session_state.tasks:
             st.session_state.tasks.pop()
             st.experimental_rerun()
-    c3.caption("Auto-refresh 1s | Fuso fixo: America/Sao_Paulo | Início/Fim aceitam HH:MM:SS.")
+    c3.caption("Contadores em 1s | Fuso fixo: America/Sao_Paulo | Início/Fim aceitam HH:MM:SS.")
 
 # Footer
 st.write("")
