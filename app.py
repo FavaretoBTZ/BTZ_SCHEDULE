@@ -2,7 +2,8 @@
 # BTZ Cronograma — atualização 1s, fuso fixo Brasília,
 # criação/edição em expanders, TABELA em painel rolável (header visível),
 # coluna "Atividade" após "Duração".
-# >> "Nova atividade": usa Início (HH:MM:SS) + Duração (MM:SS) e calcula Fim automaticamente.
+# ENCADEAMENTO: após editar, as atividades seguintes do mesmo dia
+# são reajustadas com GAP fixo de 1 minuto.
 
 from __future__ import annotations
 import time
@@ -15,6 +16,7 @@ import streamlit as st
 # ---------------- Config ----------------
 st.set_page_config(page_title="BTZ | Cronograma de Pista", page_icon="🗓️", layout="wide")
 TZINFO = ZoneInfo("America/Sao_Paulo")  # sempre Brasília
+GAP = timedelta(minutes=1)              # GAP FIXO entre atividades encadeadas
 
 STATUS_DONE = "Concluída"
 STATUS_RUNNING = "Em execução"
@@ -63,17 +65,28 @@ def parse_time_str(s: str) -> dtime | None:
             pass
     return None
 
-def parse_duration_mmss(s: str) -> timedelta | None:
-    """Converte 'MM:SS' em timedelta."""
+def parse_duration_hms(s: str) -> timedelta | None:
+    """Aceita 'HH:MM:SS' ou 'MM:SS' -> timedelta."""
     s = (s or "").strip()
     try:
-        parts = s.split(":")
-        if len(parts) != 2: return None
-        m = int(parts[0]); s = int(parts[1])
-        if m < 0 or s < 0 or s >= 60: return None
-        return timedelta(minutes=m, seconds=s)
+        parts = [int(p) for p in s.split(":")]
+        if len(parts) == 2:
+            m, s = parts
+            if m < 0 or not (0 <= s < 60): return None
+            return timedelta(minutes=m, seconds=s)
+        elif len(parts) == 3:
+            h, m, s = parts
+            if h < 0 or m < 0 or not (0 <= s < 60): return None
+            return timedelta(hours=h, minutes=m, seconds=s)
+        return None
     except Exception:
         return None
+
+def duration_to_hms(td: timedelta) -> str:
+    total = int(td.total_seconds())
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 def human_td(td: timedelta) -> str:
     sign = "-" if td.total_seconds() < 0 else ""
@@ -95,8 +108,7 @@ def classify_rows(df: pd.DataFrame, now: datetime) -> pd.DataFrame:
 
 def style_table(df: pd.DataFrame) -> str:
     preferred = ["Data","Início","Fim","Duração","Atividade","Status"]
-    fallback  = ["Start","End","Activity","Status"]
-    cols = [c for c in preferred if c in df.columns] or [c for c in fallback if c in df.columns]
+    cols = [c for c in preferred if c in df.columns]
     view = df[cols].copy()
 
     def row_style(row):
@@ -118,17 +130,51 @@ def style_table(df: pd.DataFrame) -> str:
     return styler.to_html()
 
 def ensure_state():
+    # Armazenamos: Date (iso), Start (HH:MM:SS), DurationSec (int), Activity (str)
     if "tasks" not in st.session_state:
-        st.session_state.tasks = []  # {Date, Start, End, Activity}
+        st.session_state.tasks = []
+
+def compute_schedule(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Monta Start/End reais (com TZ) e aplica encadeamento com GAP dentro de cada data."""
+    if df_raw.empty:
+        return pd.DataFrame(columns=["Start","End","Date","DurationSec","Activity"])
+
+    # Monta datetime com base em Date + Start (local Brasília)
+    out = df_raw.copy()
+    out["Date"] = pd.to_datetime(out["Date"]).dt.date
+    out["Start_dt"] = pd.to_datetime(out["Date"].astype(str) + " " + out["Start"].astype(str)).dt.tz_localize(TZINFO)
+
+    # Ordena por data e início
+    out = out.sort_values(["Date","Start_dt"]).reset_index(drop=True)
+
+    # Aplica encadeamento por dia
+    prev_end_by_day: dict[date, datetime] = {}
+    new_start_list = []
+    new_end_list = []
+    for _, row in out.iterrows():
+        d = row["Date"]
+        start_dt: datetime = row["Start_dt"]
+        dur = timedelta(seconds=int(row["DurationSec"]))
+        # Se já existe atividade antes neste dia, força novo início = fim anterior + GAP
+        if d in prev_end_by_day:
+            start_dt = prev_end_by_day[d] + GAP
+        end_dt = start_dt + dur
+        prev_end_by_day[d] = end_dt
+        new_start_list.append(start_dt)
+        new_end_list.append(end_dt)
+
+    out["Start"] = new_start_list
+    out["End"] = new_end_list
+    return out[["Date","Start","End","DurationSec","Activity"]]
 
 # ---------------- Estado ----------------
 ensure_state()
 
 # ---------------- Topo ----------------
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Header fixo da página • Atualização 1s • Fuso Brasília • **Nova atividade: Início (HH:MM:SS) + Duração (MM:SS)**.")
+st.caption("Tabela em painel rolável • Atualização 1s • Fuso Brasília • Encadeamento com GAP fixo de 1 minuto entre atividades.")
 
-# ---- Nova atividade (expander) -> FIM calculado automaticamente ----
+# ---- Nova atividade (expander) -> FIM calculado automaticamente pela duração ----
 with st.expander("»»", expanded=False):
     c1, c2, c3 = st.columns([1,1.5,3.5])
     with c1:
@@ -144,21 +190,19 @@ with st.expander("»»", expanded=False):
             st.error("Informe a atividade.")
         else:
             t_start = parse_time_str(t_start_str)
-            dur = parse_duration_mmss(dur_str)
+            dur = parse_duration_hms(dur_str)  # aceita MM:SS aqui
             if t_start is None:
                 st.error("Use o formato HH:MM:SS em **Início**.")
             elif dur is None:
                 st.error("Use o formato MM:SS em **Duração** (ex.: 05:30).")
             else:
-                start_dt = datetime.combine(d, t_start).replace(tzinfo=TZINFO)
-                end_dt = start_dt + dur
                 st.session_state.tasks.append({
                     "Date": d.isoformat(),
                     "Start": t_start.strftime("%H:%M:%S"),
-                    "End":   end_dt.strftime("%H:%M:%S"),  # armazenamos somente hora local
+                    "DurationSec": int(dur.total_seconds()),
                     "Activity": activity.strip(),
                 })
-                st.success(f"Atividade adicionada. Fim calculado: {end_dt.strftime('%H:%M:%S')}")
+                st.success(f"Atividade adicionada.")
                 st.rerun()
 
 # ---- Editar atividades (expander) ----
@@ -166,88 +210,105 @@ with st.expander("»»", expanded=False):
     if not st.session_state.tasks:
         st.info("Nenhuma atividade para editar ainda.")
     else:
-        raw_df = pd.DataFrame(st.session_state.tasks).reset_index().rename(columns={"index":"ID"})
-        edited_df = st.data_editor(
-            raw_df,
+        # Monta tabela de edição com Duration em HH:MM:SS
+        raw = pd.DataFrame(st.session_state.tasks).reset_index().rename(columns={"index":"ID"})
+        if "DurationSec" not in raw.columns:
+            # Compat: se veio de versão antiga (Start/End), calcule DurationSec
+            if {"Start","End"}.issubset(raw.columns):
+                start_dt = pd.to_datetime(date.today().isoformat() + " " + raw["Start"])
+                end_dt = pd.to_datetime(date.today().isoformat() + " " + raw["End"])
+                raw["DurationSec"] = (end_dt - start_dt).dt.total_seconds().astype(int).clip(lower=0)
+            else:
+                raw["DurationSec"] = 0
+
+        raw["Duration"] = raw["DurationSec"].apply(lambda s: duration_to_hms(timedelta(seconds=int(s))))
+
+        edited = st.data_editor(
+            raw[["ID","Date","Start","Duration","Activity"]],
             num_rows="dynamic",
             use_container_width=True,
             column_config={
                 "ID": st.column_config.NumberColumn(disabled=True),
                 "Date": st.column_config.TextColumn(help="YYYY-MM-DD"),
                 "Start": st.column_config.TextColumn(help="HH:MM:SS"),
-                "End": st.column_config.TextColumn(help="HH:MM:SS"),
+                "Duration": st.column_config.TextColumn(help="Edite em HH:MM:SS (ou MM:SS)"),
                 "Activity": st.column_config.TextColumn(help="Descrição da atividade"),
             },
-            key="editor",
+            key="editor_linked",
         )
+
         colA, colB, colC = st.columns([1,1,2])
         with colA:
-            do_save = st.button("💾 Salvar alterações", type="primary", use_container_width=True)
+            do_save = st.button("💾 Salvar & Reencadear", type="primary", use_container_width=True)
         with colB:
             to_delete = st.number_input("ID para remover", min_value=0, step=1, value=0,
                                         help="Informe o ID da linha para excluir.")
             do_delete = st.button("🗑️ Remover ID", use_container_width=True)
 
+        # Remoção (visual); confirma ao salvar
         if do_delete:
-            if to_delete in edited_df["ID"].values:
-                edited_df = edited_df[edited_df["ID"] != to_delete].reset_index(drop=True)
-                st.success(f"Removido ID {to_delete}. Clique em **Salvar alterações** para confirmar.")
+            if to_delete in edited["ID"].values:
+                edited = edited[edited["ID"] != to_delete].reset_index(drop=True)
+                st.success(f"Removido ID {to_delete}. Clique em **Salvar & Reencadear** para confirmar.")
             else:
                 st.warning("ID não encontrado na tabela acima.")
 
         if do_save:
             new_tasks: list[dict] = []
             errors: list[str] = []
-            for i, r in edited_df.iterrows():
+
+            for i, r in edited.iterrows():
                 date_str = str(r.get("Date","")).strip()
                 start_str = str(r.get("Start","")).strip()
-                end_str   = str(r.get("End","")).strip()
+                dur_str   = str(r.get("Duration","")).strip()
                 act       = str(r.get("Activity","")).strip()
-                if not (date_str and start_str and end_str and act):
+
+                if not (date_str and start_str and dur_str and act):
                     errors.append(f"Linha {i}: campos vazios."); continue
+                # valida data
                 try:
                     d_parsed = datetime.fromisoformat(date_str).date()
                 except ValueError:
                     errors.append(f"Linha {i}: Date inválida (use YYYY-MM-DD)."); continue
+                # valida início
                 t_start = parse_time_str(start_str)
-                t_end   = parse_time_str(end_str)
-                if t_start is None or t_end is None:
-                    errors.append(f"Linha {i}: horários inválidos (use HH:MM:SS)."); continue
-                if datetime.combine(d_parsed, t_end) <= datetime.combine(d_parsed, t_start):
-                    errors.append(f"Linha {i}: Fim deve ser após Início."); continue
+                if t_start is None:
+                    errors.append(f"Linha {i}: Início inválido (use HH:MM:SS)."); continue
+                # valida duração
+                dur = parse_duration_hms(dur_str)
+                if dur is None:
+                    errors.append(f"Linha {i}: Duração inválida (use HH:MM:SS ou MM:SS)."); continue
+
                 new_tasks.append({
                     "Date": d_parsed.isoformat(),
                     "Start": t_start.strftime("%H:%M:%S"),
-                    "End":   t_end.strftime("%H:%M:%S"),
+                    "DurationSec": int(dur.total_seconds()),
                     "Activity": act,
                 })
+
             if errors:
                 st.error("Não foi possível salvar por causa de erros:\n- " + "\n- ".join(errors))
             else:
+                # Grava e reencadeia (o reencadeamento acontece na renderização usando compute_schedule)
                 st.session_state.tasks = new_tasks
-                st.success("Alterações salvas.")
+                st.success("Alterações salvas e atividades reencadeadas.")
                 st.rerun()
 
 # ---- KPIs + barra ----
 if st.session_state.tasks:
-    df_tmp = pd.DataFrame(st.session_state.tasks)
-    start_str = df_tmp["Date"].astype(str) + " " + df_tmp["Start"].astype(str)
-    end_str   = df_tmp["Date"].astype(str) + " " + df_tmp["End"].astype(str)
-    df_tmp["Start"] = pd.to_datetime(start_str, errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
-    df_tmp["End"]   = pd.to_datetime(end_str,   errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
-    df_tmp = df_tmp.dropna(subset=["Start","End"]).sort_values(["Start","End"]).reset_index(drop=True)
+    base_df = pd.DataFrame(st.session_state.tasks)
+    sched = compute_schedule(base_df)
 
     now = now_br()
-    df_view = df_tmp.copy()
-    df_view["Data"]      = df_view["Start"].dt.strftime("%d/%m/%Y")
-    df_view["Início"]    = df_view["Start"].dt.strftime("%H:%M:%S")
-    df_view["Fim"]       = df_view["End"].dt.strftime("%H:%M:%S")
-    df_view["Duração"]   = (df_view["End"] - df_view["Start"]).apply(lambda x: human_td(x))
-    df_view["Atividade"] = df_view.get("Activity", df_view.get("Atividade", pd.Series([""]*len(df_view))))
-    df_view = classify_rows(df_view, now)
+    view = sched.copy()
+    view["Data"]      = view["Start"].dt.strftime("%d/%m/%Y")
+    view["Início"]    = view["Start"].dt.strftime("%H:%M:%S")
+    view["Fim"]       = view["End"].dt.strftime("%H:%M:%S")
+    view["Duração"]   = view["DurationSec"].apply(lambda s: duration_to_hms(timedelta(seconds=int(s))))
+    view = classify_rows(view, now)
 
-    running = df_view[df_view["Status"] == STATUS_RUNNING]
-    next_up = df_view[df_view["Status"] == STATUS_NEXT]
+    running = view[view["Status"] == STATUS_RUNNING]
+    next_up = view[view["Status"] == STATUS_NEXT]
     current_row = running.iloc[0] if not running.empty else None
     next_row = next_up.iloc[0] if not next_up.empty else None
 
@@ -255,7 +316,7 @@ if st.session_state.tasks:
     k1.metric("Agora (Brasília)", now.strftime("%d/%m %H:%M:%S"))
     k2.metric("⏱️ Tempo p/ acabar", human_td(current_row["End"] - now) if current_row is not None else "—")
     k3.metric("🕒 Tempo p/ próxima", human_td(next_row["Start"] - now) if next_row is not None else "—")
-    k4.metric("Atividades concluídas", f"{int((df_view['Status']==STATUS_DONE).sum())}/{len(df_view)}")
+    k4.metric("Atividades concluídas", f"{int((view['Status']==STATUS_DONE).sum())}/{len(view)}")
 
     if current_row is not None:
         total_secs = (current_row["End"] - current_row["Start"]).total_seconds()
@@ -267,21 +328,15 @@ if st.session_state.tasks:
 if not st.session_state.tasks:
     st.info("Sem atividades cadastradas.")
 else:
-    df = pd.DataFrame(st.session_state.tasks)
-    start_str = df["Date"].astype(str) + " " + df["Start"].astype(str)
-    end_str   = df["Date"].astype(str) + " " + df["End"].astype(str)
-    df["Start"] = pd.to_datetime(start_str, errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
-    df["End"]   = pd.to_datetime(end_str,   errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
+    base_df = pd.DataFrame(st.session_state.tasks)
+    sched = compute_schedule(base_df)
+    sched["Data"]      = sched["Start"].dt.strftime("%d/%m/%Y")
+    sched["Início"]    = sched["Start"].dt.strftime("%H:%M:%S")
+    sched["Fim"]       = sched["End"].dt.strftime("%H:%M:%S")
+    sched["Duração"]   = sched["DurationSec"].apply(lambda s: duration_to_hms(timedelta(seconds=int(s))))
+    sched = classify_rows(sched, now_br())
 
-    df["Data"]      = df["Start"].dt.strftime("%d/%m/%Y")
-    df["Início"]    = df["Start"].dt.strftime("%H:%M:%S")
-    df["Fim"]       = df["End"].dt.strftime("%H:%M:%S")
-    df["Duração"]   = (df["End"] - df["Start"]).apply(lambda x: human_td(x))
-    df["Atividade"] = df.get("Activity", df.get("Atividade", pd.Series([""]*len(df))))
-    df = df.dropna(subset=["Start","End"]).sort_values(["Start","End"]).reset_index(drop=True)
-    df = classify_rows(df, now_br())
-
-    html_table = style_table(df)
+    html_table = style_table(sched)
     st.markdown(f'<div class="btz-table-panel">{html_table}</div>', unsafe_allow_html=True)
 
 # ---- Auto-refresh 1s ----
