@@ -1,6 +1,6 @@
 # app.py
 # BTZ Cronograma — atualização 1s (status + contadores), fuso fixo Brasília,
-# Início/Fim com HH:MM:SS e **edição de atividades já cadastradas**.
+# Início/Fim com HH:MM:SS e edição de atividades (SEM "Legenda de cores").
 
 from __future__ import annotations
 import time
@@ -89,7 +89,7 @@ def ensure_state():
 ensure_state()
 
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS • **Edição de atividades**.")
+st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS • Edição de atividades.")
 
 # --------- Sidebar (Salvar/Carregar & Edição) ---------
 with st.sidebar:
@@ -158,11 +158,10 @@ st.subheader("🛠️ Editar atividades existentes")
 if not st.session_state.tasks:
     st.info("Nenhuma atividade para editar ainda.")
 else:
-    # Tabela editável com os dados crus (não formatados)
     raw_df = pd.DataFrame(st.session_state.tasks).reset_index().rename(columns={"index":"ID"})
     edited_df = st.data_editor(
         raw_df,
-        num_rows="dynamic",  # permite adicionar/remover
+        num_rows="dynamic",
         use_container_width=True,
         column_config={
             "ID": st.column_config.NumberColumn(disabled=True),
@@ -182,7 +181,6 @@ else:
         do_delete = st.button("🗑️ Remover ID", use_container_width=True)
 
     if do_delete:
-        # remove pelo ID se existir
         if to_delete in edited_df["ID"].values:
             edited_df = edited_df[edited_df["ID"] != to_delete].reset_index(drop=True)
             st.success(f"Removido ID {to_delete}. Clique em **Salvar alterações** para confirmar.")
@@ -190,7 +188,6 @@ else:
             st.warning("ID não encontrado na tabela acima.")
 
     if do_save:
-        # valida e grava de volta no session_state
         new_tasks: list[dict] = []
         errors: list[str] = []
         for i, r in edited_df.iterrows():
@@ -203,7 +200,6 @@ else:
                 errors.append(f"Linha {i}: campos vazios.")
                 continue
 
-            # valida data
             try:
                 d_parsed = datetime.fromisoformat(date_str).date()
             except ValueError:
@@ -251,7 +247,6 @@ else:
     df["Duração"] = (df["End"] - df["Start"]).apply(lambda x: human_td(x) if pd.notna(x) else "—")
     df = df.dropna(subset=["Start","End"]).sort_values(["Start","End"]).reset_index(drop=True)
 
-    # Classificação + métricas
     now = now_br()
     df = classify_rows(df, now)
 
@@ -277,14 +272,8 @@ else:
         pct = max(0.0, min(1.0, elapsed / total_secs)) if total_secs > 0 else 0.0
         st.progress(pct, text=f"Em execução: {current_row['Activity']} ({int(pct*100)}%)")
 
-    # Tabela estilizada
+    # Tabela estilizada (SEM legenda de cores)
     st.markdown(style_table(df), unsafe_allow_html=True)
-
-    with st.expander("Legenda de cores"):
-        st.dataframe(pd.DataFrame({
-            "Status":[STATUS_RUNNING, STATUS_DONE, STATUS_NEXT, STATUS_UPCOMING],
-            "Cor":[COLOR_RUNNING, COLOR_PAST, COLOR_NEXT, COLOR_FUTURE]
-        }), hide_index=True, use_container_width=True)
 
 # ---------------- Auto-refresh 1s (pode pausar no modo edição) ----------------
 if not st.session_state.pause_refresh:
