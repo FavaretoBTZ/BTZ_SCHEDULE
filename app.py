@@ -1,7 +1,6 @@
 # app.py
-# Streamlit schedule tracker — clean & visual (versão corrigida)
-# Run local:  streamlit run app.py
-# Deploy:     suba no GitHub e aponte o Streamlit Cloud para app.py
+# Streamlit schedule tracker — auto-refresh 1s, fuso fixo Brasília,
+# e cadastro com opção de duração em segundos.
 
 from __future__ import annotations
 import streamlit as st
@@ -9,7 +8,7 @@ import pandas as pd
 from datetime import datetime, date, time, timedelta
 from zoneinfo import ZoneInfo
 
-# ---------- Page setup ----------
+# ---------- Config da página ----------
 st.set_page_config(
     page_title="BTZ | Cronograma de Pista",
     page_icon="🗓️",
@@ -17,12 +16,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------- Helpers ----------
-def now_tz(tz_name: str) -> datetime:
-    try:
-        return datetime.now(ZoneInfo(tz_name))
-    except Exception:
-        return datetime.now()
+# ---------- Constantes ----------
+TZ_NAME = "America/Sao_Paulo"  # sempre Brasília
+TZINFO = ZoneInfo(TZ_NAME)
 
 STATUS_DONE = "Concluída"
 STATUS_RUNNING = "Em execução"
@@ -34,6 +30,11 @@ COLOR_RUNNING = "#58d68d"   # verde forte
 COLOR_NEXT = "#f9e79f"      # amarelo suave
 COLOR_FUTURE = "#ecf0f1"    # cinza claro
 
+# ---------- Helpers ----------
+def now_br() -> datetime:
+    # agora no fuso de Brasília
+    return datetime.now(TZINFO)
+
 def classify_rows(df: pd.DataFrame, now: datetime) -> pd.DataFrame:
     status = []
     for _, r in df.iterrows():
@@ -44,34 +45,25 @@ def classify_rows(df: pd.DataFrame, now: datetime) -> pd.DataFrame:
         else:
             status.append(STATUS_UPCOMING)
     df["Status"] = status
-
-    # Marca a primeira futura como "Próxima"
+    # marca a primeira futura como "Próxima"
     upcoming_idx = df.index[df["Status"] == STATUS_UPCOMING].tolist()
     if upcoming_idx:
         df.loc[upcoming_idx[0], "Status"] = STATUS_NEXT
     return df
 
 def style_table(df: pd.DataFrame) -> str:
-    """
-    Gera tabela estilizada sem dar KeyError se alguma coluna não existir.
-    Usa as colunas formatadas se disponíveis; caso contrário, cai no mínimo viável.
-    """
-    # prioridades de colunas para exibir
     preferred = ["Data", "Início", "Fim", "Atividade", "Duração", "Status"]
     fallback  = ["Start", "End", "Activity", "Status"]
-
-    cols = [c for c in preferred if c in df.columns]
-    if not cols:  # se ainda não formatou, usa o mínimo
-        cols = [c for c in fallback if c in df.columns]
-
+    cols = [c for c in preferred if c in df.columns] or [c for c in fallback if c in df.columns]
     view = df[cols].copy()
 
     def row_style(row):
-        if "Status" in row and row["Status"] == STATUS_RUNNING:
+        val = row.get("Status", "")
+        if val == STATUS_RUNNING:
             return [f"background-color: {COLOR_RUNNING}; color: #0b5345;"] * len(row)
-        if "Status" in row and row["Status"] == STATUS_DONE:
+        if val == STATUS_DONE:
             return [f"background-color: {COLOR_PAST}; color: #1b4f72;"] * len(row)
-        if "Status" in row and row["Status"] == STATUS_NEXT:
+        if val == STATUS_NEXT:
             return [f"background-color: {COLOR_NEXT}; color: #7d6608;"] * len(row)
         return [f"background-color: {COLOR_FUTURE}; color: #2c3e50;"] * len(row)
 
@@ -95,15 +87,17 @@ def style_table(df: pd.DataFrame) -> str:
     return styler.to_html()
 
 def ensure_state():
-    if "tz" not in st.session_state:
-        st.session_state.tz = "America/Sao_Paulo"
     if "tasks" not in st.session_state:
-        st.session_state.tasks = []
+        st.session_state.tasks = []  # cada item: {Date, Start, End, Activity, DurationSeconds?}
 
 def to_df(tasks):
     if not tasks:
-        return pd.DataFrame(columns=["Date","Start","End","Activity"])
-    return pd.DataFrame(tasks)
+        return pd.DataFrame(columns=["Date","Start","End","Activity","DurationSeconds"])
+    # garante a coluna DurationSeconds
+    df = pd.DataFrame(tasks)
+    if "DurationSeconds" not in df.columns:
+        df["DurationSeconds"] = None
+    return df
 
 def human_td(td: timedelta) -> str:
     sign = "-" if td.total_seconds() < 0 else ""
@@ -118,99 +112,117 @@ def human_td(td: timedelta) -> str:
 ensure_state()
 
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Cadastre atividades, veja o status em tempo real e acompanhe o tempo restante da sessão atual e a próxima atividade.")
+st.caption("Auto-refresh a cada 1s, fuso fixo Brasília. Cadastre atividades com início/fim **ou** duração em segundos.")
 
+# --- Sidebar enxuta: apenas salvar/carregar ---
 with st.sidebar:
-    st.header("⚙️ Configurações")
-    tz = st.selectbox("Fuso horário", ["America/Sao_Paulo","UTC","America/New_York","Europe/Lisbon","Europe/Paris"], index=0, key="tz")
-    refresh_sec = st.slider("Atualizar automaticamente (segundos)", 10, 120, 30, step=10)
-    auto = st.checkbox("Ativar auto-refresh", value=True, help="Recarrega a página automaticamente para atualizar o relógio.")
-    st.divider()
-    st.write("💾 **Salvar / Carregar**")
+    st.header("💾 Salvar / Carregar")
     df_csv = to_df(st.session_state.tasks)
     if not df_csv.empty:
         csv = df_csv.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Baixar CSV", data=csv, file_name="cronograma.csv", mime="text/csv")
-    uploaded = st.file_uploader("Carregar CSV", type=["csv"], help="Colunas: Date,Start,End,Activity")
+        st.download_button("⬇️ Baixar CSV", data=csv, file_name="cronograma.csv", mime="text/csv", use_container_width=True)
+    uploaded = st.file_uploader("Carregar CSV", type=["csv"], help="Colunas: Date,Start,End,Activity,DurationSeconds")
     if uploaded is not None:
         up = pd.read_csv(uploaded)
+        # normaliza colunas esperadas
+        for c in ["Date","Start","End","Activity","DurationSeconds"]:
+            if c not in up.columns:
+                up[c] = None
         tasks = []
         for _, r in up.iterrows():
-            tasks.append({"Date": str(r["Date"]), "Start": str(r["Start"]), "End": str(r["End"]), "Activity": str(r["Activity"])})
+            tasks.append({
+                "Date": str(r["Date"]) if pd.notna(r["Date"]) else "",
+                "Start": str(r["Start"]) if pd.notna(r["Start"]) else "",
+                "End": str(r["End"]) if pd.notna(r["End"]) else "",
+                "Activity": str(r["Activity"]) if pd.notna(r["Activity"]) else "",
+                "DurationSeconds": int(r["DurationSeconds"]) if pd.notna(r["DurationSeconds"]) else None,
+            })
         st.session_state.tasks = tasks
         st.success("Cronograma carregado.")
 
-# Auto-refresh simples via JS (para Cloud)
-if 'js_ref' not in st.session_state:
-    st.session_state.js_ref = 0
-if auto:
-    st.session_state.js_ref += 1
-    st.markdown(f"""
-    <script>
-    setTimeout(function() {{
-      window.location.reload();
-    }}, {int(refresh_sec)*1000});
-    </script>
-    """, unsafe_allow_html=True)
+# --- Auto-refresh a cada 1 segundo (JS simples para Cloud e local) ---
+st.markdown("""
+<script>
+setTimeout(function(){ window.location.reload(); }, 1000);
+</script>
+""", unsafe_allow_html=True)
 
-# Formulário de inclusão
+# --- Formulário de inclusão ---
 with st.container():
     st.subheader("➕ Nova atividade")
-    c1, c2, c3, c4, c5 = st.columns([1,1,1.2,3,1])
+    c1, c2, c3, c4, c5 = st.columns([1,1,1.2,2.6,1.2])
     with c1:
         d = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
     with c2:
         t_start = st.time_input("Início", value=time(8,0))
     with c3:
-        t_end = st.time_input("Fim", value=time(9,0))
+        t_end = st.time_input("Fim (opcional se usar segundos)", value=time(9,0))
     with c4:
         activity = st.text_input("Atividade", placeholder="Briefing / Warmup / Box / etc.")
     with c5:
-        st.write("") ; st.write("")
+        dur_secs = st.number_input("Duração (segundos)", min_value=0, step=30, value=0)
+    c_add = st.columns([1,5])[0]
+    with c_add:
         add = st.button("Adicionar", type="primary", use_container_width=True)
 
     if add:
         if not activity.strip():
             st.error("Informe a atividade.")
-        elif t_end <= t_start:
-            st.error("O horário de **Fim** deve ser após o **Início**.")
         else:
+            # calcula End usando duração em segundos, se informado (>0)
+            start_dt = datetime.combine(d, t_start).replace(tzinfo=TZINFO)
+            if dur_secs and dur_secs > 0:
+                end_dt = start_dt + timedelta(seconds=int(dur_secs))
+                end_str = end_dt.strftime("%H:%M")
+                dur_field = int(dur_secs)
+            else:
+                # usa o Fim informado
+                if t_end <= t_start:
+                    st.error("O horário de **Fim** deve ser após o **Início** (ou preencha duração em segundos).")
+                    st.stop()
+                end_str = time.isoformat(t_end, timespec="minutes")
+                dur_field = None
+
             st.session_state.tasks.append({
                 "Date": d.isoformat(),
                 "Start": time.isoformat(t_start, timespec="minutes"),
-                "End": time.isoformat(t_end, timespec="minutes"),
+                "End": end_str,
                 "Activity": activity.strip(),
+                "DurationSeconds": dur_field,
             })
             st.success("Atividade adicionada.")
 
-# Montagem do DataFrame
+# --- Montagem do DataFrame principal ---
 raw = to_df(st.session_state.tasks)
 
 if raw.empty:
     st.info("Nenhuma atividade cadastrada ainda. Use o formulário acima para começar.")
 else:
-    tzinfo = ZoneInfo(st.session_state.tz)
-
-    # Parse p/ datetime
     df = raw.copy()
-    df["Start"] = pd.to_datetime(df["Date"] + " " + df["Start"]).dt.tz_localize(
-        tzinfo, nonexistent="shift_forward", ambiguous="NaT"
-    )
-    df["End"] = pd.to_datetime(df["Date"] + " " + df["End"]).dt.tz_localize(
-        tzinfo, nonexistent="shift_forward", ambiguous="NaT"
-    )
 
-    # Colunas de exibição
+    # Constrói Start/End como datetime em Brasília
+    start_str = df["Date"].fillna("").astype(str) + " " + df["Start"].fillna("").astype(str)
+    end_str   = df["Date"].fillna("").astype(str) + " " + df["End"].fillna("").astype(str)
+
+    df["Start"] = pd.to_datetime(start_str, errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
+    df["End"]   = pd.to_datetime(end_str,   errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
+
+    # Quando existir DurationSeconds, recalcula End = Start + duração
+    if "DurationSeconds" in df.columns:
+        mask = df["DurationSeconds"].notna() & df["Start"].notna()
+        df.loc[mask, "End"] = df.loc[mask, "Start"] + df.loc[mask, "DurationSeconds"].astype(int).apply(lambda s: timedelta(seconds=s))
+
+    # Colunas formatadas para exibição
     df["Data"] = df["Start"].dt.strftime("%d/%m/%Y")
     df["Início"] = df["Start"].dt.strftime("%H:%M")
     df["Fim"] = df["End"].dt.strftime("%H:%M")
-    df["Duração"] = (df["End"] - df["Start"]).apply(lambda x: human_td(x))
+    df["Duração"] = (df["End"] - df["Start"]).apply(lambda x: human_td(x) if pd.notna(x) else "—")
 
-    # Ordena
-    df = df.sort_values(["Start", "End"]).reset_index(drop=True)
+    # Remove linhas inválidas (sem datas)
+    df = df.dropna(subset=["Start","End"]).sort_values(["Start","End"]).reset_index(drop=True)
 
-    # Status
-    now = now_tz(st.session_state.tz)
+    # Classificação por status
+    now = now_br()
     df = classify_rows(df, now)
 
     # Atual e próxima
@@ -222,7 +234,7 @@ else:
     # KPIs
     k1, k2, k3, k4 = st.columns(4)
     with k1:
-        st.metric("Agora", now.strftime("%d/%m %H:%M:%S"))
+        st.metric("Agora (Brasília)", now.strftime("%d/%m %H:%M:%S"))
     with k2:
         if current_row is not None:
             ends_in = current_row["End"] - now
@@ -247,7 +259,7 @@ else:
         pct = max(0.0, min(1.0, elapsed / total_secs)) if total_secs > 0 else 0.0
         st.progress(pct, text=f"Em execução: {current_row['Activity']} ({int(pct*100)}%)")
 
-    # Tabela estilizada (AGORA SEM KEYERROR)
+    # Tabela estilizada
     html = style_table(df)
     st.markdown(html, unsafe_allow_html=True)
 
@@ -272,7 +284,7 @@ else:
                 st.session_state.tasks.pop()
                 st.experimental_rerun()
     with c3:
-        st.caption("Dica: mantenha esta página aberta no box; a tabela atualiza automaticamente conforme o relógio do computador (com auto-refresh ativado).")
+        st.caption("Auto-refresh 1s | Fuso fixo: América/São_Paulo | Duração em segundos opcional no cadastro.")
 
 # Footer
 st.write("")
