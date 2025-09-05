@@ -1,6 +1,6 @@
 # app.py
 # BTZ Cronograma — atualização 1s, fuso fixo Brasília,
-# Início/Fim com HH:MM:SS, **criação e edição ocultas em EXPANDERS**, tabela única.
+# criação/edição ocultas, tabela única e HEADER "congelado" (sticky) acima da tabela.
 
 from __future__ import annotations
 import time
@@ -24,6 +24,42 @@ COLOR_PAST = "#c8f7c5"
 COLOR_RUNNING = "#58d68d"
 COLOR_NEXT = "#f9e79f"
 COLOR_FUTURE = "#ecf0f1"
+
+# --------- Estilos (sticky header + preservação de scroll) ---------
+st.markdown("""
+<style>
+/* Sticky container acima da tabela */
+.sticky-wrap {
+  position: sticky;
+  top: 0;                 /* "gruda" no topo ao rolar */
+  z-index: 1000;
+  background: #0b0f19;    /* fundo do tema dark */
+  border-bottom: 1px solid #1f2937;
+  padding-top: .25rem;
+  padding-bottom: .75rem;
+}
+
+/* remove gap entre colunas e sticky pra ficar mais compacto */
+.block-container { padding-top: 1.25rem; }
+
+/* ajusta largura da barra de progresso */
+.stProgress > div > div {
+  height: 10px;
+}
+</style>
+
+<script>
+// Preserva posição de rolagem entre atualizações (1s)
+(function(){
+  const KEY = "btz_scrollY";
+  // restaura depois que a página renderiza
+  const y = sessionStorage.getItem(KEY);
+  if (y !== null) { window.scrollTo(0, parseFloat(y)); }
+  // salva a posição continuamente
+  setInterval(()=>{ sessionStorage.setItem(KEY, window.scrollY); }, 300);
+})();
+</script>
+""", unsafe_allow_html=True)
 
 # ---------------- Helpers ----------------
 def now_br() -> datetime:
@@ -88,40 +124,13 @@ def ensure_state():
 # ---------------- Estado ----------------
 ensure_state()
 
+# ---------------- Topo (fixo) ----------------
+st.markdown('<div class="sticky-wrap">', unsafe_allow_html=True)
+
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
 st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS • Criação/Edição ocultas.")
 
-# --------- Sidebar (Salvar/Carregar & Modo edição) ---------
-with st.sidebar:
-    st.header("💾 Salvar / Carregar")
-    df_csv = pd.DataFrame(st.session_state.tasks) if st.session_state.tasks else pd.DataFrame(
-        columns=["Date","Start","End","Activity"]
-    )
-    st.download_button("⬇️ Baixar CSV", df_csv.to_csv(index=False).encode("utf-8"),
-                       "cronograma.csv", "text/csv", use_container_width=True)
-    up = st.file_uploader("Carregar CSV", type=["csv"])
-    if up is not None:
-        df_up = pd.read_csv(up)
-        for c in ["Date","Start","End","Activity"]:
-            if c not in df_up.columns: df_up[c] = None
-        st.session_state.tasks = [
-            {"Date": str(r["Date"]) if pd.notna(r["Date"]) else "",
-             "Start": str(r["Start"]) if pd.notna(r["Start"]) else "",
-             "End": str(r["End"]) if pd.notna(r["End"]) else "",
-             "Activity": str(r["Activity"]) if pd.notna(r["Activity"]) else ""}
-            for _, r in df_up.iterrows()
-        ]
-        st.success("Cronograma carregado.")
-
-    st.divider()
-    st.subheader("✏️ Modo edição")
-    st.session_state.pause_refresh = st.toggle(
-        "Pausar atualização automática enquanto edito",
-        value=False,
-        help="Ative para editar sem a página atualizar a cada 1s."
-    )
-
-# ------------- NOVA ATIVIDADE (EXPANDER oculto) -------------
+# Expanders fechados (criar + editar)
 with st.expander("»»", expanded=False):
     c1, c2, c3, c4 = st.columns([1,1.5,1.7,3.8])
     with c1:
@@ -132,7 +141,6 @@ with st.expander("»»", expanded=False):
         t_end_str = st.text_input("Fim (HH:MM:SS)", value="09:00:00", placeholder="HH:MM:SS")
     with c4:
         activity = st.text_input("Atividade", placeholder="Briefing / Warmup / Box / etc.")
-
     if st.button("Adicionar", type="primary"):
         if not activity.strip():
             st.error("Informe a atividade.")
@@ -147,13 +155,12 @@ with st.expander("»»", expanded=False):
                 st.session_state.tasks.append({
                     "Date": d.isoformat(),
                     "Start": t_start.strftime("%H:%M:%S"),
-                    "End": t_end.strftime("%H:%M:%S"),
+                    "End":   t_end.strftime("%H:%M:%S"),
                     "Activity": activity.strip(),
                 })
                 st.success("Atividade adicionada.")
                 st.rerun()
 
-# ------------- Edição de atividades (EXPANDER oculto) -------------
 with st.expander("»»", expanded=False):
     if not st.session_state.tasks:
         st.info("Nenhuma atividade para editar ainda.")
@@ -196,34 +203,24 @@ with st.expander("»»", expanded=False):
                 start_str = str(r.get("Start","")).strip()
                 end_str   = str(r.get("End","")).strip()
                 act       = str(r.get("Activity","")).strip()
-
                 if not (date_str and start_str and end_str and act):
-                    errors.append(f"Linha {i}: campos vazios.")
-                    continue
-
+                    errors.append(f"Linha {i}: campos vazios."); continue
                 try:
                     d_parsed = datetime.fromisoformat(date_str).date()
                 except ValueError:
-                    errors.append(f"Linha {i}: Date inválida (use YYYY-MM-DD).")
-                    continue
-
+                    errors.append(f"Linha {i}: Date inválida (use YYYY-MM-DD)."); continue
                 t_start = parse_time_str(start_str)
                 t_end   = parse_time_str(end_str)
                 if t_start is None or t_end is None:
-                    errors.append(f"Linha {i}: horários inválidos (use HH:MM:SS).")
-                    continue
-
+                    errors.append(f"Linha {i}: horários inválidos (use HH:MM:SS)."); continue
                 if datetime.combine(d_parsed, t_end) <= datetime.combine(d_parsed, t_start):
-                    errors.append(f"Linha {i}: Fim deve ser após Início.")
-                    continue
-
+                    errors.append(f"Linha {i}: Fim deve ser após Início."); continue
                 new_tasks.append({
                     "Date": d_parsed.isoformat(),
                     "Start": t_start.strftime("%H:%M:%S"),
                     "End":   t_end.strftime("%H:%M:%S"),
                     "Activity": act,
                 })
-
             if errors:
                 st.error("Não foi possível salvar por causa de erros:\n- " + "\n- ".join(errors))
             else:
@@ -231,40 +228,33 @@ with st.expander("»»", expanded=False):
                 st.success("Alterações salvas.")
                 st.rerun()
 
-# ------------- Construção da visão -------------
-if not st.session_state.tasks:
-    st.stop()
-else:
-    df = pd.DataFrame(st.session_state.tasks)
-
-    start_str = df["Date"].fillna("").astype(str) + " " + df["Start"].fillna("").astype(str)
-    end_str   = df["Date"].fillna("").astype(str) + " " + df["End"].fillna("").astype(str)
-    df["Start"] = pd.to_datetime(start_str, errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
-    df["End"]   = pd.to_datetime(end_str,   errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
-
-    df["Data"]    = df["Start"].dt.strftime("%d/%m/%Y")
-    df["Início"]  = df["Start"].dt.strftime("%H:%M:%S")
-    df["Fim"]     = df["End"].dt.strftime("%H:%M:%S")
-    df["Duração"] = (df["End"] - df["Start"]).apply(lambda x: human_td(x) if pd.notna(x) else "—")
-    df = df.dropna(subset=["Start","End"]).sort_values(["Start","End"]).reset_index(drop=True)
+# KPIs + progresso (parte do sticky)
+if st.session_state.tasks:
+    df_tmp = pd.DataFrame(st.session_state.tasks)
+    start_str = df_tmp["Date"].astype(str) + " " + df_tmp["Start"].astype(str)
+    end_str   = df_tmp["Date"].astype(str) + " " + df_tmp["End"].astype(str)
+    df_tmp["Start"] = pd.to_datetime(start_str, errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
+    df_tmp["End"]   = pd.to_datetime(end_str,   errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
+    df_tmp = df_tmp.dropna(subset=["Start","End"]).sort_values(["Start","End"]).reset_index(drop=True)
 
     now = now_br()
-    df = classify_rows(df, now)
+    df_view = df_tmp.copy()
+    df_view["Data"]    = df_view["Start"].dt.strftime("%d/%m/%Y")
+    df_view["Início"]  = df_view["Start"].dt.strftime("%H:%M:%S")
+    df_view["Fim"]     = df_view["End"].dt.strftime("%H:%M:%S")
+    df_view["Duração"] = (df_view["End"] - df_view["Start"]).apply(lambda x: human_td(x))
+    df_view = classify_rows(df_view, now)
 
-    running = df[df["Status"] == STATUS_RUNNING]
-    next_up = df[df["Status"] == STATUS_NEXT]
+    running = df_view[df_view["Status"] == STATUS_RUNNING]
+    next_up = df_view[df_view["Status"] == STATUS_NEXT]
     current_row = running.iloc[0] if not running.empty else None
     next_row = next_up.iloc[0] if not next_up.empty else None
 
     k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        st.metric("Agora (Brasília)", now.strftime("%d/%m %H:%M:%S"))
-    with k2:
-        st.metric("⏱️ Tempo p/ acabar", human_td(current_row["End"] - now) if current_row is not None else "—")
-    with k3:
-        st.metric("🕒 Tempo p/ próxima", human_td(next_row["Start"] - now) if next_row is not None else "—")
-    with k4:
-        st.metric("Atividades concluídas", f"{int((df['Status']==STATUS_DONE).sum())}/{len(df)}")
+    k1.metric("Agora (Brasília)", now.strftime("%d/%m %H:%M:%S"))
+    k2.metric("⏱️ Tempo p/ acabar", human_td(current_row["End"] - now) if current_row is not None else "—")
+    k3.metric("🕒 Tempo p/ próxima", human_td(next_row["Start"] - now) if next_row is not None else "—")
+    k4.metric("Atividades concluídas", f"{int((df_view['Status']==STATUS_DONE).sum())}/{len(df_view)}")
 
     if current_row is not None:
         total_secs = (current_row["End"] - current_row["Start"]).total_seconds()
@@ -272,10 +262,28 @@ else:
         pct = max(0.0, min(1.0, elapsed / total_secs)) if total_secs > 0 else 0.0
         st.progress(pct, text=f"Em execução: {current_row['Activity']} ({int(pct*100)}%)")
 
-    # Tabela única
-    st.empty().markdown(style_table(df), unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)  # fecha sticky-wrap
 
-# ---------------- Auto-refresh 1s (pausável) ----------------
+# ---------------- Tabela (abaixo do sticky) ----------------
+if not st.session_state.tasks:
+    st.info("Sem atividades cadastradas.")
+else:
+    df = pd.DataFrame(st.session_state.tasks)
+    start_str = df["Date"].astype(str) + " " + df["Start"].astype(str)
+    end_str   = df["Date"].astype(str) + " " + df["End"].astype(str)
+    df["Start"] = pd.to_datetime(start_str, errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
+    df["End"]   = pd.to_datetime(end_str,   errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward", ambiguous="NaT")
+
+    df["Data"]    = df["Start"].dt.strftime("%d/%m/%Y")
+    df["Início"]  = df["Start"].dt.strftime("%H:%M:%S")
+    df["Fim"]     = df["End"].dt.strftime("%H:%M:%S")
+    df["Duração"] = (df["End"] - df["Start"]).apply(lambda x: human_td(x))
+    df = df.dropna(subset=["Start","End"]).sort_values(["Start","End"]).reset_index(drop=True)
+    df = classify_rows(df, now_br())
+
+    st.markdown(style_table(df), unsafe_allow_html=True)
+
+# ---------------- Auto-refresh 1s (pausável via toggle no sidebar) ----------------
 if not st.session_state.pause_refresh:
     time.sleep(1.0)
     st.rerun()
