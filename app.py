@@ -3,7 +3,7 @@
 # criação/edição em expanders, TABELA em painel rolável (header visível),
 # coluna "Atividade" após "Duração".
 # ENCADEAMENTO: atividades encadeadas com GAP fixo de 1 minuto.
-# Compatibilidade: aceita dados antigos sem DurationSec (calcula a partir de Start/End).
+# AGORA: os horários encadeados são SALVOS de volta no session_state.
 
 from __future__ import annotations
 import time
@@ -145,22 +145,18 @@ def _safe_int(x, default=0):
 def normalize_tasks(df_raw: pd.DataFrame) -> pd.DataFrame:
     """
     Garante as colunas: Date, Start, DurationSec, Activity.
-    Se DurationSec faltar, tenta calcular por Start/End (mesmo dataset antigo).
+    Se DurationSec faltar, tenta calcular por Start/End (dataset antigo).
     """
     if df_raw is None or df_raw.empty:
         return pd.DataFrame(columns=["Date","Start","DurationSec","Activity"])
 
     out = df_raw.copy()
-
-    # Garantir colunas básicas
     for c in ["Date","Start","Activity"]:
         if c not in out.columns:
             out[c] = ""
 
-    # Se não existir DurationSec, tenta derivar de End (versões antigas)
     if "DurationSec" not in out.columns or out["DurationSec"].isna().all():
         if "End" in out.columns:
-            # usa a mesma data para computar delta
             try:
                 start_dt = pd.to_datetime(out["Date"].astype(str) + " " + out["Start"].astype(str), errors="coerce")
                 end_dt   = pd.to_datetime(out["Date"].astype(str) + " " + out["End"].astype(str), errors="coerce")
@@ -173,11 +169,9 @@ def normalize_tasks(df_raw: pd.DataFrame) -> pd.DataFrame:
     else:
         out["DurationSec"] = out["DurationSec"].apply(_safe_int)
 
-    # Linha a prova de tipos
     out["Date"] = out["Date"].astype(str)
     out["Start"] = out["Start"].astype(str)
     out["Activity"] = out["Activity"].astype(str)
-
     return out[["Date","Start","DurationSec","Activity"]]
 
 def compute_schedule(df_raw: pd.DataFrame) -> pd.DataFrame:
@@ -187,12 +181,11 @@ def compute_schedule(df_raw: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["Date","Start","End","DurationSec","Activity"])
 
     base["Date"] = pd.to_datetime(base["Date"], errors="coerce").dt.date
-    base["Start_dt"] = pd.to_datetime(base["Date"].astype(str) + " " + base["Start"].astype(str), errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward")
+    base["Start_dt"] = pd.to_datetime(base["Date"].astype(str) + " " + base["Start"].astype(str),
+                                      errors="coerce").dt.tz_localize(TZINFO, nonexistent="shift_forward")
 
-    # Ordena por data e início
     base = base.dropna(subset=["Date","Start_dt"]).sort_values(["Date","Start_dt"]).reset_index(drop=True)
 
-    # Aplica encadeamento por dia
     prev_end_by_day: dict[date, datetime] = {}
     starts, ends = [], []
     for _, row in base.iterrows():
@@ -209,14 +202,33 @@ def compute_schedule(df_raw: pd.DataFrame) -> pd.DataFrame:
     base["End"] = ends
     return base[["Date","Start","End","DurationSec","Activity"]]
 
+def persist_chained_back(df_raw_like_list: list[dict]) -> None:
+    """
+    Reencadeia e grava de volta no session_state.tasks, com Start já recalculado (HH:MM:SS).
+    """
+    base = pd.DataFrame(df_raw_like_list)
+    sched = compute_schedule(base)
+    # grava formatado
+    st.session_state.tasks = [{
+        "Date": d.isoformat(),
+        "Start": s.strftime("%H:%M:%S"),
+        "DurationSec": int(dur),
+        "Activity": act,
+    } for d, s, dur, act in zip(
+        sched["Date"],
+        sched["Start"].dt.tz_convert(TZINFO).dt.to_pydatetime(),
+        sched["DurationSec"],
+        sched["Activity"],
+    )]
+
 # ---------------- Estado ----------------
 ensure_state()
 
 # ---------------- Topo ----------------
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Tabela em painel rolável • Atualização 1s • Fuso Brasília • Encadeamento com GAP de 1 min • Compatível com dados antigos.")
+st.caption("Tabela em painel rolável • Atualização 1s • Fuso Brasília • Encadeamento com GAP de 1 min • Horários encadeados são salvos no editor.")
 
-# ---- Nova atividade (expander) -> FIM calculado pela duração ----
+# ---- Nova atividade (expander) -> salva já reencadeando ----
 with st.expander("»»", expanded=False):
     c1, c2, c3 = st.columns([1,1.5,3.5])
     with c1:
@@ -238,13 +250,14 @@ with st.expander("»»", expanded=False):
             elif dur is None:
                 st.error("Use o formato MM:SS em **Duração** (ex.: 05:30).")
             else:
-                st.session_state.tasks.append({
+                new_list = list(st.session_state.tasks) + [{
                     "Date": d.isoformat(),
                     "Start": t_start.strftime("%H:%M:%S"),
                     "DurationSec": int(dur.total_seconds()),
                     "Activity": activity.strip(),
-                })
-                st.success("Atividade adicionada.")
+                }]
+                persist_chained_back(new_list)   # <- SALVA REENCadeado
+                st.success("Atividade adicionada e reencadeada.")
                 st.rerun()
 
 # ---- Editar atividades (expander) ----
@@ -316,7 +329,7 @@ with st.expander("»»", expanded=False):
             if errors:
                 st.error("Não foi possível salvar por causa de erros:\n- " + "\n- ".join(errors))
             else:
-                st.session_state.tasks = new_tasks
+                persist_chained_back(new_tasks)  # <- SALVA REENCadeado (todas as seguintes ajustam)
                 st.success("Alterações salvas e atividades reencadeadas.")
                 st.rerun()
 
