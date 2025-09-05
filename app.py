@@ -1,6 +1,6 @@
 # app.py
-# BTZ Cronograma — atualização completa a cada 1s (status + contadores),
-# fuso fixo Brasília, Início/Fim com HH:MM:SS (sem campo de duração).
+# BTZ Cronograma — atualização 1s (status + contadores), fuso fixo Brasília,
+# Início/Fim com HH:MM:SS e **edição de atividades já cadastradas**.
 
 from __future__ import annotations
 import time
@@ -82,14 +82,16 @@ def style_table(df: pd.DataFrame) -> str:
 def ensure_state():
     if "tasks" not in st.session_state:
         st.session_state.tasks = []  # {Date, Start, End, Activity}
+    if "pause_refresh" not in st.session_state:
+        st.session_state.pause_refresh = False
 
 # ---------------- Estado ----------------
 ensure_state()
 
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS.")
+st.caption("Atualização automática de 1s (status + contadores) • Fuso fixo Brasília • Início/Fim com HH:MM:SS • **Edição de atividades**.")
 
-# --------- Sidebar (Salvar/Carregar) ---------
+# --------- Sidebar (Salvar/Carregar & Edição) ---------
 with st.sidebar:
     st.header("💾 Salvar / Carregar")
     df_csv = pd.DataFrame(st.session_state.tasks) if st.session_state.tasks else pd.DataFrame(
@@ -111,7 +113,15 @@ with st.sidebar:
         ]
         st.success("Cronograma carregado.")
 
-# ------------- Formulário (sem duração) -------------
+    st.divider()
+    st.subheader("✏️ Modo edição")
+    st.session_state.pause_refresh = st.toggle(
+        "Pausar atualização automática enquanto edito",
+        value=False,
+        help="Ative para editar sem a página atualizar a cada 1s."
+    )
+
+# ------------- Formulário (criar nova) -------------
 st.subheader("➕ Nova atividade")
 c1, c2, c3, c4 = st.columns([1,1.5,1.7,3.8])
 with c1:
@@ -142,9 +152,91 @@ if st.button("Adicionar", type="primary"):
             })
             st.success("Atividade adicionada.")
 
+# ------------- Edição de atividades -------------
+st.subheader("🛠️ Editar atividades existentes")
+
+if not st.session_state.tasks:
+    st.info("Nenhuma atividade para editar ainda.")
+else:
+    # Tabela editável com os dados crus (não formatados)
+    raw_df = pd.DataFrame(st.session_state.tasks).reset_index().rename(columns={"index":"ID"})
+    edited_df = st.data_editor(
+        raw_df,
+        num_rows="dynamic",  # permite adicionar/remover
+        use_container_width=True,
+        column_config={
+            "ID": st.column_config.NumberColumn(disabled=True),
+            "Date": st.column_config.TextColumn(help="YYYY-MM-DD"),
+            "Start": st.column_config.TextColumn(help="HH:MM:SS"),
+            "End": st.column_config.TextColumn(help="HH:MM:SS"),
+            "Activity": st.column_config.TextColumn(help="Descrição da atividade"),
+        },
+        key="editor",
+    )
+
+    colA, colB, colC = st.columns([1,1,2])
+    with colA:
+        do_save = st.button("💾 Salvar alterações", type="primary", use_container_width=True)
+    with colB:
+        to_delete = st.number_input("ID para remover", min_value=0, step=1, value=0, help="Informe o ID da linha para excluir.")
+        do_delete = st.button("🗑️ Remover ID", use_container_width=True)
+
+    if do_delete:
+        # remove pelo ID se existir
+        if to_delete in edited_df["ID"].values:
+            edited_df = edited_df[edited_df["ID"] != to_delete].reset_index(drop=True)
+            st.success(f"Removido ID {to_delete}. Clique em **Salvar alterações** para confirmar.")
+        else:
+            st.warning("ID não encontrado na tabela acima.")
+
+    if do_save:
+        # valida e grava de volta no session_state
+        new_tasks: list[dict] = []
+        errors: list[str] = []
+        for i, r in edited_df.iterrows():
+            date_str = str(r.get("Date","")).strip()
+            start_str = str(r.get("Start","")).strip()
+            end_str   = str(r.get("End","")).strip()
+            act       = str(r.get("Activity","")).strip()
+
+            if not (date_str and start_str and end_str and act):
+                errors.append(f"Linha {i}: campos vazios.")
+                continue
+
+            # valida data
+            try:
+                d_parsed = datetime.fromisoformat(date_str).date()
+            except ValueError:
+                errors.append(f"Linha {i}: Date inválida (use YYYY-MM-DD).")
+                continue
+
+            t_start = parse_time_str(start_str)
+            t_end   = parse_time_str(end_str)
+            if t_start is None or t_end is None:
+                errors.append(f"Linha {i}: horários inválidos (use HH:MM:SS).")
+                continue
+
+            if datetime.combine(d_parsed, t_end) <= datetime.combine(d_parsed, t_start):
+                errors.append(f"Linha {i}: Fim deve ser após Início.")
+                continue
+
+            new_tasks.append({
+                "Date": d_parsed.isoformat(),
+                "Start": t_start.strftime("%H:%M:%S"),
+                "End":   t_end.strftime("%H:%M:%S"),
+                "Activity": act,
+            })
+
+        if errors:
+            st.error("Não foi possível salvar por causa de erros:\n- " + "\n- ".join(errors))
+        else:
+            st.session_state.tasks = new_tasks
+            st.success("Alterações salvas.")
+            st.rerun()
+
 # ------------- Construção da visão -------------
 if not st.session_state.tasks:
-    st.info("Nenhuma atividade cadastrada ainda. Use o formulário acima para começar.")
+    st.stop()
 else:
     df = pd.DataFrame(st.session_state.tasks)
 
@@ -194,17 +286,7 @@ else:
             "Cor":[COLOR_RUNNING, COLOR_PAST, COLOR_NEXT, COLOR_FUTURE]
         }), hide_index=True, use_container_width=True)
 
-    st.divider()
-    c1, c2, c3 = st.columns([1,1,2])
-    if c1.button("🧹 Limpar tudo", type="secondary"):
-        st.session_state.tasks = []
-        st.rerun()
-    if c2.button("🗑️ Remover última"):
-        if st.session_state.tasks:
-            st.session_state.tasks.pop()
-            st.rerun()
-    c3.caption("Atualização automática de 1s | Fuso fixo: America/Sao_Paulo | Início/Fim em HH:MM:SS.")
-
-# ---------------- Auto-refresh 1s (reexecução do app) ----------------
-time.sleep(1.0)
-st.rerun()
+# ---------------- Auto-refresh 1s (pode pausar no modo edição) ----------------
+if not st.session_state.pause_refresh:
+    time.sleep(1.0)
+    st.rerun()
