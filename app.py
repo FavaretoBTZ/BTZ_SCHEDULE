@@ -1,6 +1,8 @@
 # app.py
-# BTZ Cronograma — header fixo + atualização 1s, fuso fixo Brasília,
-# criação/edição em expanders, tabela única e coluna "Atividade" após "Duração".
+# BTZ Cronograma — atualização 1s, fuso fixo Brasília,
+# criação/edição em expanders, TABELA em painel rolável (header visível),
+# coluna "Atividade" após "Duração".
+# >> "Nova atividade": usa Início (HH:MM:SS) + Duração (MM:SS) e calcula Fim automaticamente.
 
 from __future__ import annotations
 import time
@@ -24,56 +26,26 @@ COLOR_RUNNING = "#58d68d"
 COLOR_NEXT = "#f9e79f"
 COLOR_FUTURE = "#ecf0f1"
 
-# --------- CSS/JS: header fixo + preservação do scroll ---------
+# --------- CSS/JS: painel rolável da tabela + preservação do scroll ---------
 st.markdown("""
 <style>
-/* Header fixo centralizado, com largura semelhante ao container do Streamlit */
-#btz-fixed {
-  position: fixed;
-  top: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(100vw - 2rem, 1200px);
-  z-index: 1000;
-  background: #0b0f19;          /* fundo dark */
-  border-bottom: 1px solid #1f2937;
-  padding: .25rem .5rem .75rem .5rem;
-  border-radius: 0 0 .5rem .5rem;
+.btz-table-panel {
+  max-height: 65vh;
+  overflow-y: auto;
+  padding-right: 6px;
+  border: 1px solid #1f2937;
+  border-radius: 10px;
+  background: #0b0f19;
 }
-
-/* Espaçador para empurrar o conteúdo abaixo do header fixo */
-.btz-spacer { height: var(--btz-fixed-h, 240px); }
-
-/* Barra de progresso mais "parruda" */
+.btz-table-panel table thead th { position: sticky; top: 0; z-index: 2; }
 .stProgress > div > div { height: 10px; }
-
-/* Deixa o header da tabela grudado também, se desejar */
-table thead th { position: sticky; top: 0; z-index: 1; }
 </style>
-
 <script>
-// Ajusta dinamicamente a altura do espaçador de acordo com o header fixo
 (function(){
-  const KEY = "btz_scrollY";
-  function restoreScroll(){
-    const y = sessionStorage.getItem(KEY);
-    if (y !== null) { window.scrollTo(0, parseFloat(y)); }
-  }
-  function saveScroll(){
-    sessionStorage.setItem(KEY, window.scrollY);
-  }
-  setInterval(saveScroll, 300);
-
-  const el = document.getElementById("btz-fixed");
-  function setH(){
-    if (!el) return;
-    const h = el.offsetHeight;
-    document.documentElement.style.setProperty("--btz-fixed-h", (h + 8) + "px");
-  }
-  const ro = new ResizeObserver(setH);
-  if (el) ro.observe(el);
-  setH();
-  restoreScroll();
+  const KEY="btz_scrollY";
+  const restore=()=>{const y=sessionStorage.getItem(KEY); if(y!==null) window.scrollTo(0, parseFloat(y));};
+  const save=()=>sessionStorage.setItem(KEY, window.scrollY);
+  setInterval(save, 300); restore();
 })();
 </script>
 """, unsafe_allow_html=True)
@@ -90,6 +62,18 @@ def parse_time_str(s: str) -> dtime | None:
         except ValueError:
             pass
     return None
+
+def parse_duration_mmss(s: str) -> timedelta | None:
+    """Converte 'MM:SS' em timedelta."""
+    s = (s or "").strip()
+    try:
+        parts = s.split(":")
+        if len(parts) != 2: return None
+        m = int(parts[0]); s = int(parts[1])
+        if m < 0 or s < 0 or s >= 60: return None
+        return timedelta(minutes=m, seconds=s)
+    except Exception:
+        return None
 
 def human_td(td: timedelta) -> str:
     sign = "-" if td.total_seconds() < 0 else ""
@@ -110,7 +94,6 @@ def classify_rows(df: pd.DataFrame, now: datetime) -> pd.DataFrame:
     return df
 
 def style_table(df: pd.DataFrame) -> str:
-    # Ordem desejada com "Atividade" após "Duração"
     preferred = ["Data","Início","Fim","Duração","Atividade","Status"]
     fallback  = ["Start","End","Activity","Status"]
     cols = [c for c in preferred if c in df.columns] or [c for c in fallback if c in df.columns]
@@ -137,49 +120,48 @@ def style_table(df: pd.DataFrame) -> str:
 def ensure_state():
     if "tasks" not in st.session_state:
         st.session_state.tasks = []  # {Date, Start, End, Activity}
-    if "pause_refresh" not in st.session_state:
-        st.session_state.pause_refresh = False
 
 # ---------------- Estado ----------------
 ensure_state()
 
-# -------------- HEADER FIXO (tudo que fica sempre visível) --------------
-st.markdown('<div id="btz-fixed">', unsafe_allow_html=True)
-
+# ---------------- Topo ----------------
 st.title("🗓️ Cronograma de Pista — BTZ Motorsport")
-st.caption("Header fixo + atualização automática de 1s • Fuso Brasília • Início/Fim com HH:MM:SS • Criação/Edição ocultas.")
+st.caption("Header fixo da página • Atualização 1s • Fuso Brasília • **Nova atividade: Início (HH:MM:SS) + Duração (MM:SS)**.")
 
-# Expanders fechados: criar e editar
+# ---- Nova atividade (expander) -> FIM calculado automaticamente ----
 with st.expander("»»", expanded=False):
-    c1, c2, c3, c4 = st.columns([1,1.5,1.7,3.8])
+    c1, c2, c3 = st.columns([1,1.5,3.5])
     with c1:
         d = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
     with c2:
         t_start_str = st.text_input("Início (HH:MM:SS)", value="08:00:00", placeholder="HH:MM:SS")
     with c3:
-        t_end_str = st.text_input("Fim (HH:MM:SS)", value="09:00:00", placeholder="HH:MM:SS")
-    with c4:
-        activity = st.text_input("Atividade", placeholder="Briefing / Warmup / Box / etc.")
+        dur_str = st.text_input("Duração (MM:SS)", value="00:45", placeholder="MM:SS")
+    activity = st.text_input("Atividade", placeholder="Briefing / Warmup / Box / etc.", key="new_activity")
+
     if st.button("Adicionar", type="primary"):
         if not activity.strip():
             st.error("Informe a atividade.")
         else:
             t_start = parse_time_str(t_start_str)
-            t_end = parse_time_str(t_end_str)
-            if t_start is None or t_end is None:
-                st.error("Use o formato HH:MM:SS em **Início** e **Fim**.")
-            elif datetime.combine(d, t_end) <= datetime.combine(d, t_start):
-                st.error("**Fim** deve ser após **Início**.")
+            dur = parse_duration_mmss(dur_str)
+            if t_start is None:
+                st.error("Use o formato HH:MM:SS em **Início**.")
+            elif dur is None:
+                st.error("Use o formato MM:SS em **Duração** (ex.: 05:30).")
             else:
+                start_dt = datetime.combine(d, t_start).replace(tzinfo=TZINFO)
+                end_dt = start_dt + dur
                 st.session_state.tasks.append({
                     "Date": d.isoformat(),
                     "Start": t_start.strftime("%H:%M:%S"),
-                    "End":   t_end.strftime("%H:%M:%S"),
+                    "End":   end_dt.strftime("%H:%M:%S"),  # armazenamos somente hora local
                     "Activity": activity.strip(),
                 })
-                st.success("Atividade adicionada.")
+                st.success(f"Atividade adicionada. Fim calculado: {end_dt.strftime('%H:%M:%S')}")
                 st.rerun()
 
+# ---- Editar atividades (expander) ----
 with st.expander("»»", expanded=False):
     if not st.session_state.tasks:
         st.info("Nenhuma atividade para editar ainda.")
@@ -246,7 +228,7 @@ with st.expander("»»", expanded=False):
                 st.success("Alterações salvas.")
                 st.rerun()
 
-# KPIs e barra (parte do header fixo)
+# ---- KPIs + barra ----
 if st.session_state.tasks:
     df_tmp = pd.DataFrame(st.session_state.tasks)
     start_str = df_tmp["Date"].astype(str) + " " + df_tmp["Start"].astype(str)
@@ -257,10 +239,10 @@ if st.session_state.tasks:
 
     now = now_br()
     df_view = df_tmp.copy()
-    df_view["Data"]    = df_view["Start"].dt.strftime("%d/%m/%Y")
-    df_view["Início"]  = df_view["Start"].dt.strftime("%H:%M:%S")
-    df_view["Fim"]     = df_view["End"].dt.strftime("%H:%M:%S")
-    df_view["Duração"] = (df_view["End"] - df_view["Start"]).apply(lambda x: human_td(x))
+    df_view["Data"]      = df_view["Start"].dt.strftime("%d/%m/%Y")
+    df_view["Início"]    = df_view["Start"].dt.strftime("%H:%M:%S")
+    df_view["Fim"]       = df_view["End"].dt.strftime("%H:%M:%S")
+    df_view["Duração"]   = (df_view["End"] - df_view["Start"]).apply(lambda x: human_td(x))
     df_view["Atividade"] = df_view.get("Activity", df_view.get("Atividade", pd.Series([""]*len(df_view))))
     df_view = classify_rows(df_view, now)
 
@@ -281,9 +263,7 @@ if st.session_state.tasks:
         pct = max(0.0, min(1.0, elapsed / total_secs)) if total_secs > 0 else 0.0
         st.progress(pct, text=f"Em execução: {current_row['Activity']} ({int(pct*100)}%)")
 
-st.markdown('</div><div class="btz-spacer"></div>', unsafe_allow_html=True)  # fecha header e insere espaçador
-
-# ---------------- TABELA (conteúdo que rola) ----------------
+# ---- Tabela (painel rolável) ----
 if not st.session_state.tasks:
     st.info("Sem atividades cadastradas.")
 else:
@@ -301,8 +281,9 @@ else:
     df = df.dropna(subset=["Start","End"]).sort_values(["Start","End"]).reset_index(drop=True)
     df = classify_rows(df, now_br())
 
-    st.markdown(style_table(df), unsafe_allow_html=True)
+    html_table = style_table(df)
+    st.markdown(f'<div class="btz-table-panel">{html_table}</div>', unsafe_allow_html=True)
 
-# ---------------- Auto-refresh 1s (pausável se quiser adicionar um toggle) ----------------
+# ---- Auto-refresh 1s ----
 time.sleep(1.0)
 st.rerun()
